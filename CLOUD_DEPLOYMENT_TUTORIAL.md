@@ -156,6 +156,7 @@ https://123456789.cn-hangzhou.fc.aliyuncs.com/2016-08-15/proxy/video-insight/bot
 | FEISHU_VERIFICATION_TOKEN | 飞书验证令牌 | 验证令牌 |
 | FEISHU_ENCRYPT_KEY | 飞书加密密钥 | 加密密钥 |
 | TEMP_CLEANUP_ENABLED | 是否启用临时文件清理 | true |
+1
 
 ### 第五步：权限配置
 
