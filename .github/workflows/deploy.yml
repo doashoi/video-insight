@@ -97,11 +97,12 @@ jobs:
                   # 其他配置
                   TEMP_CLEANUP_ENABLED: "true"
                   PYTHONUNBUFFERED: "1"
-                logConfig:
-                  project: video-insight-logs
-                  logstore: function-log
-                  enableRequestMetrics: true
-                  enableInstanceMetrics: true
+                # 暂时注释掉日志配置，以修复 SLS Project 不存在的问题 (方案 B)
+                # logConfig:
+                #   project: video-insight-logs
+                #   logstore: function-log
+                #   enableRequestMetrics: true
+                #   enableInstanceMetrics: true
                 triggers:
                   - triggerName: http-trigger
                     triggerType: http
