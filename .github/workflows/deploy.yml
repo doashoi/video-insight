@@ -1,52 +1,156 @@
-name: Deploy to Alibaba Cloud FC
+name: 🚀 部署视频分析机器人到阿里云函数计算
 
 on:
   push:
-    branches: [main]  # 推送到 main 分支时触发
+    branches: [main]  # 推送到 main 分支时自动触发部署
+  workflow_dispatch:  # 允许在 GitHub Actions 界面手动触发部署
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 30  # 预留充足时间用于 PyTorch 镜像构建
+
     steps:
-      - name: Checkout code
+      # =============== 1. 代码检出 ===============
+      - name: 📥 检出代码仓库
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install dependencies
-        run: |
-          pip install --no-cache-dir -e .
-
-      - name: Set up Docker Buildx
+      # =============== 2. Docker 环境准备 ===============
+      - name: 🐳 配置 Docker Buildx（启用构建缓存加速）
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to ACR (native command)
+      # =============== 3. ACR 登录（关键修复：Personal CR 专属域名） ===============
+      - name: 🔑 登录阿里云容器镜像服务 (Personal CR)
         run: |
-          echo "${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}" | docker login --username ${{ secrets.ALIYUN_ACCESS_KEY_ID }} registry.cn-hangzhou.aliyuncs.com --password-stdin
+          # 重要说明：
+          # - 用户名：必须使用阿里云账号名（如 nick6911659316），不是 AccessKey ID！
+          # - 密码：使用 RAM 子账号的 AccessKey Secret
+          # - 域名：必须使用 Personal CR 专属域名（非标准 registry.cn-hangzhou.aliyuncs.com）
+          echo "${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}" | docker login \
+            --username="${{ secrets.ALIYUN_ACCOUNT_ID }}" \
+            --password-stdin \
+            ${{ secrets.ACR_REGISTRY_URL }}
+        env:
+          # 确保 Secrets 已正确配置（在 GitHub 仓库 Settings → Secrets → Actions 中设置）：
+          #   ALIYUN_ACCOUNT_ID: nick6911659316          ← 阿里云账号名（不是AccessKey ID！）
+          #   ALIYUN_ACCESS_KEY_SECRET: xxxxxx          ← RAM子账号的AccessKey Secret
+          #   ACR_REGISTRY_URL: crpi-ejvhnaao5o1qzzps.cn-hangzhou.personal.cr.aliyuncs.com ← 专属域名
 
-      - name: Build and push image
+      # =============== 4. 构建并推送容器镜像 ===============
+      - name: 🏗️ 构建并推送 Docker 镜像到 Personal CR
+        uses: docker/build-push-action@v5
+        with:
+          context: .  # 使用当前目录作为构建上下文
+          push: true  # 构建完成后自动推送
+          tags: |
+            # 关键修复：使用专属域名 + 命名空间 + 镜像名
+            ${{ secrets.ACR_REGISTRY_URL }}/${{ secrets.ACR_NAMESPACE }}/video-insight:${{ github.sha }}
+            ${{ secrets.ACR_REGISTRY_URL }}/${{ secrets.ACR_NAMESPACE }}/video-insight:latest
+          cache-from: type=gha  # 从 GitHub Actions 缓存加载层
+          cache-to: type=gha,mode=max  # 将新层保存到缓存
+          build-args: |
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            VCS_REF=${{ github.sha }}
+
+      # =============== 5. 安装 Serverless Devs（阿里云函数计算 CLI） ===============
+      - name: ⚙️ 安装 Serverless Devs 工具
         run: |
-          IMAGE_TAG=registry.cn-hangzhou.aliyuncs.com/video-insight/video-insight:${{ github.sha }}
-          docker build -t $IMAGE_TAG .
-          docker push $IMAGE_TAG
-          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          npm install -g @serverless-devs/s@latest
+          # 验证安装
+          s -v
 
-      - name: Install Serverless Devs
-        run: npm install -g @serverless-devs/s
-
-      - name: Configure Serverless Devs
+      # =============== 6. 配置阿里云凭证 ===============
+      - name: 🔐 配置 Serverless Devs 凭证
         run: |
-          s config add --AccessKeyID ${{ secrets.ALIYUN_ACCESS_KEY_ID }} \
-                       --AccessKeySecret ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }} \
-                       --AccountID default \
-                       --Region cn-hangzhou \
-                       -a default
+          # 注意：AccountID 参数留空（-）让工具自动获取，避免错误
+          s config add -a default -f \
+            --AccessKeyID "${{ secrets.ALIYUN_ACCESS_KEY_ID }}" \
+            --AccessKeySecret "${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}" \
+            --Region "cn-hangzhou"
 
-      - name: Deploy to FC
+      # =============== 7. 动态生成部署配置（安全注入环境变量） ===============
+      - name: 📝 生成函数计算部署配置 (s.yaml)
         run: |
-          # 更新 s.yaml 中的镜像地址
-          sed -i "s|registry.cn-hangzhou.aliyuncs.com/video-insight/video-insight:.*|registry.cn-hangzhou.aliyuncs.com/video-insight/video-insight:${{ github.sha }}|g" s.yaml
-          s deploy --use-local -y
+          # 创建 s.yaml 配置文件（避免将敏感信息提交到仓库）
+          cat > s.yaml <<EOF
+          services:
+            video-insight:
+              component: fc
+              props:
+                region: cn-hangzhou
+                service:
+                  name: video-insight
+                  internetAccess: true  # 开启公网访问（飞书回调需要）
+                  logConfig:
+                    project: video-insight-logs
+                    logstore: function-log
+                function:
+                  name: bot-processor
+                  runtime: custom-container  # 使用自定义容器运行时
+                  caPort: 9000              # 容器内服务监听端口（与 server.py 一致）
+                  memorySize: 4096          # 4GB 内存（视频处理最低要求）
+                  timeout: 900              # 15分钟超时（长视频处理需要）
+                  instanceConcurrency: 1    # 单实例并发数（避免资源竞争）
+                  customContainerConfig:
+                    # 关键修复：使用专属域名的完整镜像地址
+                    image: "${{ secrets.ACR_REGISTRY_URL }}/${{ secrets.ACR_NAMESPACE }}/video-insight:${{ github.sha }}"
+                  environmentVariables:
+                    # 飞书机器人配置（从 GitHub Secrets 安全注入）
+                    FEISHU_APP_ID: "${{ secrets.FEISHU_APP_ID }}"
+                    FEISHU_APP_SECRET: "${{ secrets.FEISHU_APP_SECRET }}"
+                    FEISHU_VERIFICATION_TOKEN: "${{ secrets.FEISHU_VERIFICATION_TOKEN }}"
+                    FEISHU_ENCRYPT_KEY: "${{ secrets.FEISHU_ENCRYPT_KEY }}"
+                    # 其他配置
+                    TEMP_CLEANUP_ENABLED: "true"
+                    PYTHONUNBUFFERED: "1"  # 实时输出日志
+                triggers:
+                  - name: http-trigger
+                    type: http
+                    config:
+                      authType: anonymous  # 允许匿名访问（飞书回调需要）
+                      methods:
+                        - POST
+          EOF
+          
+          # 显示生成的配置（调试用，敏感信息已脱敏）
+          echo "✅ 生成的 s.yaml 配置："
+          cat s.yaml | grep -v "FEISHU_APP_SECRET\|FEISHU_ENCRYPT_KEY" || true
+
+      # =============== 8. 部署到函数计算 ===============
+      - name: 🚀 部署到阿里云函数计算
+        id: deploy
+        run: |
+          echo "🔧 开始部署函数计算服务..."
+          # --use-local: 使用当前目录的 s.yaml
+          # -y: 自动确认所有提示
+          s deploy --use-local -y 2>&1 | tee deploy.log
+          
+          # 从部署日志中提取 HTTP 触发器 URL
+          if grep -q "HTTP Trigger URL" deploy.log; then
+            TRIGGER_URL=$(grep "HTTP Trigger URL" deploy.log | awk -F': ' '{print $2}' | tr -d '\r')
+            echo "trigger_url=${TRIGGER_URL}" >> $GITHUB_OUTPUT
+            echo "✅ HTTP 触发器创建成功: ${TRIGGER_URL}"
+          else
+            echo "⚠️  未在日志中找到触发器 URL（首次部署可能需要手动在控制台查看）"
+            echo "trigger_url=未找到" >> $GITHUB_OUTPUT
+          fi
+
+      # =============== 9. 部署结果摘要 ===============
+      - name: ✅ 部署完成摘要
+        run: |
+          echo "=========================================="
+          echo "✅ 视频分析机器人部署成功！"
+          echo "=========================================="
+          echo "📦 镜像地址: ${{ secrets.ACR_REGISTRY_URL }}/${{ secrets.ACR_NAMESPACE }}/video-insight:${{ github.sha }}"
+          echo "🔧 服务名称: video-insight"
+          echo "🤖 函数名称: bot-processor"
+          echo "🔗 Webhook 地址: ${{ steps.deploy.outputs.trigger_url }}"
+          echo "   （如显示'未找到'，请登录阿里云控制台查看：函数计算 → 服务/函数 → 触发器）"
+          echo "⏰ 部署完成时间: $(date +'%Y-%m-%d %H:%M:%S CST')"
+          echo "=========================================="
+          echo ""
+          echo "📌 下一步操作："
+          echo "1. 复制上方 Webhook 地址"
+          echo "2. 登录飞书开放平台 → 你的应用 → 事件与回调"
+          echo "3. 将 URL 填入【请求网址URL】字段"
+          echo "4. 确保已订阅事件：接收消息、消息已读、卡片互动"
