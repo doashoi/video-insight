@@ -60,8 +60,7 @@ jobs:
           # 注意：AccountID 参数留空（-）让工具自动获取，避免错误
           s config add -a default -f \
             --AccessKeyID "${{ secrets.ALIYUN_ACCESS_KEY_ID }}" \
-            --AccessKeySecret "${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}" \
-            --Region "cn-hangzhou"
+            --AccessKeySecret "${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}"
 
       # =============== 7. 动态生成部署配置（安全注入环境变量） ===============
       - name: 📝 生成函数计算部署配置 (s.yaml)
