@@ -3,6 +3,12 @@ import logging
 import threading
 import lark_oapi
 from lark_oapi.ws import Client
+import sys
+from pathlib import Path
+
+# Add src to sys.path
+sys.path.insert(0, str(Path(__file__).parent / "src"))
+
 from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
 from lark_oapi.api.im.v1.model import P2ImMessageReceiveV1, CreateMessageRequest, CreateMessageRequestBody
 from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTrigger

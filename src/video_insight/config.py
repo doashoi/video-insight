@@ -7,7 +7,7 @@ load_dotenv()
 
 class Config:
     # Project Paths
-    ROOT_DIR = Path(__file__).parent.parent
+    ROOT_DIR = Path(__file__).parent.parent.parent
     # Central Temp Processing Directory (Server Local)
     OUTPUT_DIR = ROOT_DIR / "Data_Analysis_Video_Download"
     RESULT_DIR = ROOT_DIR / "result"
