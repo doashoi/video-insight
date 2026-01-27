@@ -47,7 +47,8 @@ jobs:
             ${{ secrets.ACR_REGISTRY_URL }}/${{ secrets.ACR_NAMESPACE }}/video-insight:${{ github.sha }}
             ${{ secrets.ACR_REGISTRY_URL }}/${{ secrets.ACR_NAMESPACE }}/video-insight:latest
           # 关键修复：强制输出标准 OCI Manifest，包含完整架构元数据
-          outputs: type=image,oci-mediatypes=true,push-by-digest=true,name-canonical=true
+          # 注意：移除了 push-by-digest=true 以避免与 tags 冲突
+          outputs: type=image,oci-mediatypes=true,push=true
           cache-from: type=gha  # 从 GitHub Actions 缓存加载层
           cache-to: type=gha,mode=max  # 将新层保存到缓存
           build-args: |
