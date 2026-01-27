@@ -17,8 +17,10 @@ WORKDIR /app
 COPY pyproject.toml .
 
 # 4. Install Python Dependencies
-# We manually extract dependencies or just install key ones if pyproject is complex
-# Here we install the key packages directly to ensure stability
+# 关键优化：优先安装 CPU 版本的 PyTorch，大幅减小镜像体积 (3GB -> 500MB)
+RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# 安装其余依赖 (移除了 torchvision)
 RUN pip install --no-cache-dir \
     fastapi \
     uvicorn \
@@ -27,9 +29,6 @@ RUN pip install --no-cache-dir \
     openpyxl \
     python-dotenv \
     pillow \
-    torch \
-    torchaudio \
-    torchvision \
     tqdm \
     lark-oapi \
     opencv-python \

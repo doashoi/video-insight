@@ -14,7 +14,6 @@ dependencies = [
     "pillow>=10.0.0",
     "torch>=2.0.0",
     "torchaudio>=2.0.0",
-    "torchvision>=0.15.0",
     "tqdm>=4.67.0",
     "lark-oapi>=1.5.2",
     "opencv-python>=4.13.0.90",
