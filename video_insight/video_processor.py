@@ -1,0 +1,589 @@
+import os
+import sys
+import subprocess
+import gc
+import re
+import math
+import shutil
+import traceback
+from pathlib import Path
+from typing import List, Dict, Tuple, Optional
+
+import cv2
+import torch
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+
+# Add implicit dependencies to sys.path if needed, or rely on installed packages.
+# funasr and modelscope are installed packages.
+
+from .config import config
+
+class VideoAnalyzer:
+    def __init__(self):
+        """Initialize VideoAnalyzer with models and paths from config."""
+        self.model_dir = config.MODEL_DIR
+        self.vad_model_dir = config.VAD_MODEL_DIR
+        self.ffmpeg_exe = config.FFMPEG_PATH
+        
+        # Register FFmpeg path
+        ffmpeg_dir = os.path.dirname(self.ffmpeg_exe)
+        if ffmpeg_dir not in os.environ["PATH"]:
+            os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ["PATH"]
+            print(f"[Init] FFmpeg path registered: {ffmpeg_dir}")
+
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.asr_model = None
+        self.vad_model = None
+
+    def release_model(self):
+        """Release GPU memory."""
+        if self.asr_model is not None:
+            del self.asr_model
+        if self.vad_model is not None:
+            del self.vad_model
+        self.asr_model = None
+        self.vad_model = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print("[System] GPU memory released")
+
+    def extract_audio_track(self, video_path: str, audio_path: str) -> bool:
+        """Extract audio from video (16k, mono, pcm_s16le)."""
+        cmd = [
+            str(self.ffmpeg_exe), "-y", "-i", video_path,
+            "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+            audio_path, "-loglevel", "error"
+        ]
+        try:
+            print(f"[Audio] Extracting audio to: {audio_path}")
+            subprocess.run(cmd, check=True)
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"[Error] Audio extraction failed: {e}")
+            return False
+
+    def _load_models(self):
+        """Lazy load models."""
+        if self.asr_model is None or self.vad_model is None:
+            # Add model_dir to sys.path to ensure local imports work if necessary
+            # Note: usually funasr handles this, but we keep it for safety if models rely on local code
+            if str(self.model_dir) not in sys.path:
+                sys.path.insert(0, str(self.model_dir))
+            
+            from funasr import AutoModel
+            print(f"[Init] Loading models on {self.device}...")
+            
+            try:
+                print(f"[Init] Loading VAD model: {self.vad_model_dir.name}")
+                self.vad_model = AutoModel(
+                    model=str(self.vad_model_dir),
+                    trust_remote_code=True,
+                    device=self.device,
+                    disable_update=True
+                )
+
+                print(f"[Init] Loading SenseVoice model: {self.model_dir.name}")
+                self.asr_model = AutoModel(
+                    model=str(self.model_dir),
+                    trust_remote_code=False,
+                    device=self.device,
+                    disable_update=True
+                )
+            except Exception as e:
+                print(f"[Error] Model loading failed: {e}")
+                raise
+
+    def analyze_audio(self, video_path: str, output_dir: str) -> Optional[List[Dict]]:
+        """Run VAD + ASR on the video audio."""
+        temp_audio_dir = Path(output_dir) / "temp_audio"
+        temp_audio_dir.mkdir(exist_ok=True)
+        audio_path = temp_audio_dir / "full_audio.wav"
+        
+        if not self.extract_audio_track(video_path, str(audio_path)):
+            return None
+
+        try:
+            self._load_models()
+        except Exception:
+            return None
+
+        print(f"[Analysis] Processing audio: {audio_path.name}")
+        results = []
+        try:
+            # 1. VAD
+            print("[VAD] Detecting speech segments...")
+            vad_res = self.vad_model.generate(
+                input=str(audio_path),
+                max_single_segment_time=1500,
+                max_end_silence_time=150,
+                min_start_silence_time=100,
+                min_speech_duration_ms=100,
+            )
+            
+            segments = []
+            if vad_res and len(vad_res) > 0 and 'value' in vad_res[0]:
+                segments = vad_res[0]['value']
+                print(f"[VAD] Found {len(segments)} segments")
+            else:
+                print(f"[Warning] No speech detected (Raw: {vad_res})")
+                return None
+
+            # 2. ASR
+            print("[ASR] Recognizing speech...")
+            clean_pattern = re.compile(r'<\|.*?\|>')
+            
+            for i, (start_ms, end_ms) in enumerate(segments):
+                chunk_path = temp_audio_dir / f"chunk_{i:03d}.wav"
+                duration_s = (end_ms - start_ms) / 1000.0
+                start_s = start_ms / 1000.0
+                
+                cmd = [
+                    str(self.ffmpeg_exe), "-y", "-i", str(audio_path),
+                    "-ss", f"{start_s:.3f}", "-t", f"{duration_s:.3f}",
+                    "-c", "copy", str(chunk_path), "-loglevel", "error"
+                ]
+                subprocess.run(cmd, check=True)
+                
+                asr_res = self.asr_model.generate(
+                    input=str(chunk_path),
+                    cache={},
+                    language="zh",
+                    use_itn=True,
+                    batch_size_s=60,
+                    merge_vad=False, 
+                    return_spk_res=False,
+                )
+                
+                raw_sentences = []
+                if asr_res and len(asr_res) > 0:
+                    raw_text = asr_res[0].get('text', '')
+                    clean_text = clean_pattern.sub('', raw_text).strip()
+                    clean_text = re.sub(r'\s+', ' ', clean_text)
+                    
+                    if clean_text:
+                        punc_list = "，。！？；"
+                        split_pattern = f'([^{punc_list}]+[{punc_list}]?)'
+                        sub_sentences = re.findall(split_pattern, clean_text)
+                        
+                        if len(sub_sentences) > 1:
+                            total_chars = len(clean_text)
+                            current_ms = start_ms
+                            for sub_s in sub_sentences:
+                                sub_len = len(sub_s)
+                                ratio = sub_len / total_chars
+                                sub_duration = (end_ms - start_ms) * ratio
+                                raw_sentences.append({
+                                    'start': current_ms,
+                                    'end': current_ms + sub_duration,
+                                    'text': sub_s.strip()
+                                })
+                                current_ms += sub_duration
+                        else:
+                            raw_sentences.append({
+                                'start': start_ms,
+                                'end': end_ms,
+                                'text': clean_text
+                            })
+
+                for item in raw_sentences:
+                    text = item['text']
+                    if text:
+                        s_s = item['start'] / 1000.0
+                        s_e = item['end'] / 1000.0
+                        print(f"  [{s_s:.2f}s - {s_e:.2f}s]: {text}")
+                        results.append(item)
+                
+                try: chunk_path.unlink()
+                except: pass
+                
+            return results
+
+        except Exception as e:
+            print(f"[Error] Inference failed: {e}")
+            traceback.print_exc()
+            return None
+
+    def _get_anchors(self, results: List[Dict], video_path: str) -> List[float]:
+        """Generate anchor points based on speech and visual changes."""
+        anchors = []
+        if not results:
+            return []
+
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)
+            
+        if not cap.isOpened():
+            print(f"[Error] Cannot open video: {video_path}")
+            return []
+            
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        duration = total_frames / fps if fps > 0 else 0
+        
+        # 1. Speech-based anchors
+        print("[Anchors] Generating speech-based anchors...")
+        for res in results:
+            start_s = res['start'] / 1000.0
+            end_s = res['end'] / 1000.0
+            
+            s_anchor = round(start_s + 0.3, 2)
+            e_anchor = round(end_s - 0.2, 2)
+            
+            if e_anchor > s_anchor:
+                anchors.append(s_anchor)
+                anchors.append(e_anchor)
+            else:
+                anchors.append(round((start_s + end_s) / 2, 2))
+
+        # 2. Visual change detection
+        print("[Anchors] Detecting visual changes...")
+        sample_rate = 2 
+        last_frame_gray = None
+        for t in np.arange(0, duration, 1.0 / sample_rate):
+            cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+            ret, frame = cap.read()
+            if not ret: break
+            
+            curr_gray = cv2.cvtColor(cv2.resize(frame, (64, 64)), cv2.COLOR_BGR2GRAY)
+            if last_frame_gray is not None:
+                diff = cv2.absdiff(curr_gray, last_frame_gray)
+                score = np.mean(diff)
+                if score > 30:
+                    anchors.append(max(0, round(t - 0.1, 2)))
+                    anchors.append(min(duration - 0.01, round(t + 0.1, 2)))
+            last_frame_gray = curr_gray
+        
+        cap.release()
+
+        final_anchors = sorted(list(set([a for a in anchors if 0 <= a < duration])))
+        print(f"[Anchors] Total anchors: {len(final_anchors)}")
+        return final_anchors
+
+    def extract_frames(self, video_path: str, anchors: List[float], temp_dir: str) -> List[Tuple[float, str]]:
+        """Extract frames at anchor points."""
+        frame_paths = []
+        temp_path = Path(temp_dir)
+        temp_path.mkdir(exist_ok=True)
+        
+        for i, ts in enumerate(anchors):
+            out_path = temp_path / f"frame_{i:04d}.jpg"
+            cmd = [
+                str(self.ffmpeg_exe), "-y", "-ss", str(ts), "-i", video_path,
+                "-vframes", "1", "-q:v", "2", str(out_path), "-loglevel", "error"
+            ]
+            try:
+                subprocess.run(cmd, check=True)
+                if out_path.exists():
+                    frame_paths.append((ts, str(out_path)))
+            except Exception as e:
+                print(f"[FFmpeg Error] Failed at {ts}s: {e}")
+        return frame_paths
+
+    def _get_hashes(self, img: np.ndarray) -> Dict:
+        """Calculate aHash, dHash, pHash."""
+        resized = cv2.resize(img, (256, 256))
+        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+
+        # aHash
+        ahash_img = cv2.resize(blurred, (8, 8), interpolation=cv2.INTER_AREA)
+        avg = ahash_img.mean()
+        ahash = "".join(['1' if p > avg else '0' for p in ahash_img.flatten()])
+
+        # dHash
+        dhash_img = cv2.resize(blurred, (9, 8), interpolation=cv2.INTER_AREA)
+        dhash = ""
+        for i in range(8):
+            for j in range(8):
+                dhash += "1" if dhash_img[i, j] > dhash_img[i, j+1] else "0"
+
+        # pHash
+        phash_img = cv2.resize(blurred, (32, 32), interpolation=cv2.INTER_AREA)
+        dct = cv2.dct(np.float32(phash_img))
+        dct_low = dct[:8, :8]
+        p_avg = dct_low.mean()
+        phash = "".join(['1' if p > p_avg else '0' for p in dct_low.flatten()])
+
+        return {'ahash': ahash, 'dhash': dhash, 'phash': phash, 'raw_gray': blurred}
+
+    def _get_multi_distance(self, h1: Dict, h2: Dict) -> Dict:
+        """Calculate distances between hashes."""
+        d_a = sum(c1 != c2 for c1, c2 in zip(h1['ahash'], h2['ahash']))
+        d_d = sum(c1 != c2 for c1, c2 in zip(h1['dhash'], h2['dhash']))
+        d_p = sum(c1 != c2 for c1, c2 in zip(h1['phash'], h2['phash']))
+        
+        pixel_diff = np.mean(cv2.absdiff(h1['raw_gray'], h2['raw_gray']))
+        
+        return {
+            'ahash': d_a, 'dhash': d_d, 'phash': d_p, 
+            'avg': (d_a + d_d + d_p) / 3.0,
+            'pixel_diff': pixel_diff
+        }
+
+    def _cv2_imread_unicode(self, path: str) -> Optional[np.ndarray]:
+        """Read image with unicode path support."""
+        try:
+            return cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)
+        except Exception as e:
+            print(f"[Error] Failed to read image {path}: {e}")
+            return None
+
+    def remove_duplicate_frames(self, frame_info: List[Tuple[float, str]], threshold: int = 5) -> List[Tuple[float, str]]:
+        """Remove duplicate frames."""
+        if not frame_info: return []
+        
+        print(f"[Dedup] Deduplicating {len(frame_info)} frames (Threshold: {threshold})...")
+        
+        frame_hashes = []
+        for ts, path in frame_info:
+            img = self._cv2_imread_unicode(path)
+            if img is not None:
+                frame_hashes.append({'ts': ts, 'path': path, 'hashes': self._get_hashes(img)})
+            else:
+                print(f"[Warning] Could not read image for dedup: {path}")
+
+        if not frame_hashes: return []
+
+        kept = [frame_hashes[0]]
+        report_data = []
+        filtered_pairs_count = 0
+
+        for i in range(1, len(frame_hashes)):
+            curr = frame_hashes[i]
+            prev = kept[-1]
+            
+            dist = self._get_multi_distance(curr['hashes'], prev['hashes'])
+            
+            is_different = (
+                dist['ahash'] > threshold or 
+                dist['dhash'] > threshold or 
+                dist['phash'] > threshold or 
+                dist['avg'] > 4 or
+                dist['pixel_diff'] > 15
+            )
+            
+            if is_different:
+                kept.append(curr)
+            else:
+                filtered_pairs_count += 1
+            
+            report_data.append({
+                'ts_pair': (prev['ts'], curr['ts']),
+                'distances': dist,
+                'kept': is_different
+            })
+
+        final_list = kept
+        if len(final_list) > 9:
+            indices = np.linspace(0, len(final_list) - 1, 9).astype(int)
+            final_list = [final_list[idx] for idx in indices]
+            print(f"[Dedup] Too many frames ({len(kept)} > 9), resampled to 9.")
+        
+        elif len(final_list) < 3 and len(frame_hashes) >= 3:
+            existing_paths = {f['path'] for f in final_list}
+            candidates = [f for f in frame_hashes if f['path'] not in existing_paths]
+            while len(final_list) < 3 and candidates:
+                final_list.append(candidates.pop(len(candidates)//2))
+            final_list.sort(key=lambda x: x['ts'])
+            print(f"[Dedup] Too few frames ({len(kept)} < 3), supplemented from originals.")
+
+        print(f"[Dedup] {len(frame_info)} -> {len(final_list)} (Filtered {filtered_pairs_count})")
+        
+        # Cleanup deleted files
+        final_paths = {f['path'] for f in final_list}
+        for ts, p in frame_info:
+            if p not in final_paths:
+                try: Path(p).unlink()
+                except: pass
+
+        # Generate Report
+        report_path = Path(frame_info[0][1]).parent.parent / "dedup_report.txt"
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write("=== Dedup Report ===\n")
+            f.write(f"Original: {len(frame_info)}\n")
+            f.write(f"Kept: {len(final_list)}\n\n")
+            for item in report_data:
+                f.write(f"[{item['ts_pair'][0]:.2f}s vs {item['ts_pair'][1]:.2f}s] ")
+                f.write(f"pHash:{item['distances']['phash']} dHash:{item['distances']['dhash']} ")
+                f.write(f"Diff:{item['distances']['pixel_diff']:.2f} Keep:{item['kept']}\n")
+        
+        return [(f['ts'], f['path']) for f in final_list]
+
+    def create_contact_sheet(self, frame_info: List[Tuple[float, str]], output_base_path: str) -> List[str]:
+        """Create contact sheet (grid image)."""
+        if not frame_info: return []
+            
+        total_frames = len(frame_info)
+        chunk_size = 9
+        output_files = []
+
+        with Image.open(frame_info[0][1]) as first_img:
+            w, h = first_img.size
+            is_portrait = h > w
+
+        for chunk_idx, i in enumerate(range(0, total_frames, chunk_size)):
+            chunk = frame_info[i : i + chunk_size]
+            num_in_chunk = len(chunk)
+            
+            if num_in_chunk <= 3:
+                cols, rows = (1, num_in_chunk) if not is_portrait else (num_in_chunk, 1)
+            elif num_in_chunk <= 4:
+                cols, rows = 2, 2
+            elif num_in_chunk <= 6:
+                cols, rows = (2, 3) if not is_portrait else (3, 2)
+            else:
+                cols, rows = 3, 3
+
+            max_side = 400
+            processed_imgs = []
+            try:
+                font = ImageFont.truetype("arial.ttf", 22)
+            except:
+                font = ImageFont.load_default()
+
+            for ts, p in chunk:
+                with Image.open(p) as img:
+                    img = img.convert("RGB")
+                    img.thumbnail((max_side, max_side))
+                    
+                    draw = ImageDraw.Draw(img, "RGBA")
+                    ts_text = f"{ts:.2f}s"
+                    
+                    bbox = draw.textbbox((5, 5), ts_text, font=font)
+                    draw.rectangle([bbox[0]-2, bbox[1]-2, bbox[2]+2, bbox[3]+2], fill=(0,0,0,160))
+                    draw.text((5, 5), ts_text, fill="white", font=font)
+                    processed_imgs.append(img.copy())
+
+            cell_w, cell_h = processed_imgs[0].size
+            canvas = Image.new('RGB', (cell_w * cols, cell_h * rows), (30, 30, 30))
+            for idx, img in enumerate(processed_imgs):
+                canvas.paste(img, ((idx % cols) * cell_w, (idx // cols) * cell_h))
+
+            if total_frames <= chunk_size:
+                save_path = output_base_path
+            else:
+                sheet_name = f"contact_sheet_{chunk_idx + 1}.jpg"
+                save_path = output_base_path.replace("final_sheet.jpg", sheet_name)
+            
+            canvas.save(save_path, "JPEG", quality=95)
+            print(f"[Success] Contact sheet saved: {save_path}")
+            output_files.append(save_path)
+
+        return output_files
+
+def process_video_folder(video_folder: Path, output_root: Path, progress_callback=None):
+    """Process all videos in the folder."""
+    analyzer = VideoAnalyzer()
+
+    valid_extensions = ('.mp4', '.avi', '.mov', '.mkv', '.flv', '.ts')
+    
+    if not video_folder.exists():
+        print(f"[Error] Video folder does not exist: {video_folder}")
+        if progress_callback:
+            progress_callback(f"❌ 视频文件夹不存在: {video_folder}")
+        return
+
+    video_files = [f for f in video_folder.iterdir() if f.suffix.lower() in valid_extensions]
+    
+    if not video_files:
+        print(f"[Warning] No valid videos found in: {video_folder}")
+        if progress_callback:
+            progress_callback(f"⚠️ 文件夹中没有找到有效视频: {video_folder}")
+        return
+
+    print(f"[Batch] Found {len(video_files)} videos")
+    
+    # Phase 1: Audio Extraction & ASR
+    if progress_callback:
+        progress_callback(f"🎵 正在提取音频并进行语音识别，共计 {len(video_files)} 条...")
+
+    audio_success_count = 0
+    for video_file in video_files:
+        video_name = video_file.name
+        video_basename = video_file.stem
+        
+        video_out_dir = output_root / video_basename
+        video_out_dir.mkdir(parents=True, exist_ok=True)
+        
+        transcript_path = video_out_dir / "transcript_detailed.txt"
+        
+        # Check if transcript exists
+        if transcript_path.exists():
+            audio_success_count += 1
+            continue
+
+        print(f"\n>>> Processing Audio: {video_name}")
+        results = analyzer.analyze_audio(str(video_file), str(video_out_dir))
+        
+        if results:
+            with open(transcript_path, "w", encoding="utf-8") as f:
+                for item in results:
+                    f.write(f"[{item['start']/1000:.2f}s - {item['end']/1000:.2f}s] {item['text']}\n")
+            audio_success_count += 1
+        else:
+            print(f"[Skip] No speech detected or audio failed: {video_name}")
+            if progress_callback:
+                progress_callback(f"⚠️ 音频提取失败: {video_name}")
+
+    # Phase 2: Screenshots
+    if progress_callback:
+        progress_callback(f"🖼️ 音频提取完成，正在进行截图，共计 {len(video_files)} 条...")
+        
+    for video_file in video_files:
+        video_name = video_file.name
+        video_basename = video_file.stem
+        video_out_dir = output_root / video_basename
+        
+        image_out_dir = video_out_dir / "cache_images"
+        sheet_path = video_out_dir / "final_sheet.jpg"
+        transcript_path = video_out_dir / "transcript_detailed.txt"
+        
+        if sheet_path.exists():
+            continue
+            
+        if not transcript_path.exists():
+            continue
+            
+        print(f"\n>>> Processing Images: {video_name}")
+        
+        # Reload results from transcript (Simplified parsing, or re-run analyze if needed? 
+        # Re-running analyze is expensive. We need to parse the transcript back to 'results' format for _get_anchors)
+        # Actually _get_anchors needs 'start' and 'end' in ms.
+        # Let's parse the transcript file.
+        results = []
+        try:
+            with open(transcript_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    # Format: [0.00s - 1.20s] Text
+                    parts = line.strip().split("] ")
+                    if len(parts) >= 2:
+                        time_part = parts[0][1:] # 0.00s - 1.20s
+                        times = time_part.split(" - ")
+                        start_ms = float(times[0].replace("s", "")) * 1000
+                        end_ms = float(times[1].replace("s", "")) * 1000
+                        results.append({'start': start_ms, 'end': end_ms})
+        except Exception as e:
+            print(f"[Error] Failed to parse transcript for {video_name}: {e}")
+            continue
+
+        anchors = analyzer._get_anchors(results, str(video_file))
+        frame_info = analyzer.extract_frames(str(video_file), anchors, str(image_out_dir))
+        
+        final_frames = analyzer.remove_duplicate_frames(frame_info)
+        analyzer.create_contact_sheet(final_frames, str(sheet_path))
+        
+        print(f"[Done] Finished Images: {video_name}")
+
+        # --- Auto-Delete Video to save space ---
+        try:
+            print(f"[Cleanup] Deleting temp video: {video_name}")
+            video_file.unlink()
+        except Exception as e:
+            print(f"[Cleanup Error] Failed to delete {video_name}: {e}")
+
+    analyzer.release_model()
+    if progress_callback:
+        progress_callback("✅ 视频预处理（音频+截图）全部完成！")

@@ -1,0 +1,31 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.python-version
+
+# Models (大模型文件，运行时自动下载)
+models/SenseVoiceSmall/
+models/Qwen2-VL-2B-Instruct/
+models/**/*.msc
+models/**/*.mv
+models/**/model.pt
+models/**/am.mvn
+
+# Media & Output
+videos/
+output/
+result/
+
+# Tools (Windows版ffmpeg不需要提交，Docker会自动安装Linux版)
+ffmpeg_tool/
+
+# Dev tools
+.vscode/
+.trae/
+
+# API信息
+.env/

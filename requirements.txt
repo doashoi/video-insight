@@ -1,0 +1,11 @@
+requests
+pandas
+openpyxl
+python-dotenv
+lark-oapi
+tqdm
+Pillow
+opencv-python
+torch
+numpy
+funasr
