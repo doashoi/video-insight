@@ -86,6 +86,7 @@ jobs:
                 customContainerConfig:
                   image: "${{ secrets.ACR_REGISTRY_URL }}/${{ secrets.ACR_NAMESPACE }}/video-insight:${{ github.sha }}"
                   port: 9000
+                  accelerationType: Default  # 显式指定镜像加速类型，避免自动检测卡死
                 environmentVariables:
                   # 飞书机器人配置
                   FEISHU_APP_ID: "${{ secrets.FEISHU_APP_ID }}"
@@ -124,7 +125,7 @@ jobs:
           set -o pipefail
           
           echo "🔧 开始部署函数计算服务..."
-          s deploy --use-local -y 2>&1 | tee deploy.log
+          s deploy --use-local -y --debug 2>&1 | tee deploy.log
           
           # 提取 FC 3.0 的 Trigger URL
           # 尝试从日志中匹配 .fcapp.run 的 URL
