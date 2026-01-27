@@ -30,11 +30,6 @@ jobs:
             --username="${{ secrets.ALIYUN_ACCOUNT_ID }}" \
             --password-stdin \
             ${{ secrets.ACR_REGISTRY_URL }}
-        env:
-          # 确保 Secrets 已正确配置（在 GitHub 仓库 Settings → Secrets → Actions 中设置）：
-          #   ALIYUN_ACCOUNT_ID: nick6911659316          ← 阿里云账号名（不是AccessKey ID！）
-          #   ALIYUN_ACCESS_KEY_SECRET: xxxxxx          ← RAM子账号的AccessKey Secret
-          #   ACR_REGISTRY_URL: crpi-ejvhnaao5o1qzzps.cn-hangzhou.personal.cr.aliyuncs.com ← 专属域名
 
       # =============== 4. 构建并推送容器镜像 ===============
       - name: 🏗️ 构建并推送 Docker 镜像到 Personal CR
