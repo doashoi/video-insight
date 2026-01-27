@@ -26,7 +26,7 @@ jobs:
           # - 用户名：必须使用阿里云账号名（如 nick6911659316），不是 AccessKey ID！
           # - 密码：使用 RAM 子账号的 AccessKey Secret
           # - 域名：必须使用 Personal CR 专属域名（非标准 registry.cn-hangzhou.aliyuncs.com）
-          echo "${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}" | docker login \
+          echo "${{ secrets.ALIYUN_PASSWORD }}" | docker login \
             --username="${{ secrets.ALIYUN_ACCOUNT_ID }}" \
             --password-stdin \
             ${{ secrets.ACR_REGISTRY_URL }}
