@@ -37,8 +37,8 @@ jobs:
         with:
           context: .  # 使用当前目录作为构建上下文
           push: true  # 构建完成后自动推送
+          # 关键修复：使用专属域名 + 命名空间 + 镜像名
           tags: |
-            # 关键修复：使用专属域名 + 命名空间 + 镜像名
             ${{ secrets.ACR_REGISTRY_URL }}/${{ secrets.ACR_NAMESPACE }}/video-insight:${{ github.sha }}
             ${{ secrets.ACR_REGISTRY_URL }}/${{ secrets.ACR_NAMESPACE }}/video-insight:latest
           cache-from: type=gha  # 从 GitHub Actions 缓存加载层
