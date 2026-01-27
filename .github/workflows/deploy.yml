@@ -100,6 +100,8 @@ jobs:
                     FEISHU_APP_SECRET: "${{ secrets.FEISHU_APP_SECRET }}"
                     FEISHU_VERIFICATION_TOKEN: "${{ secrets.FEISHU_VERIFICATION_TOKEN }}"
                     FEISHU_ENCRYPT_KEY: "${{ secrets.FEISHU_ENCRYPT_KEY }}"
+                    # AI Model Config
+                    DASHSCOPE_API_KEY: "${{ secrets.DASHSCOPE_API_KEY }}"
                     # 其他配置
                     TEMP_CLEANUP_ENABLED: "true"
                     PYTHONUNBUFFERED: "1"  # 实时输出日志

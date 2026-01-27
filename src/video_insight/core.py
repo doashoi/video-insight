@@ -1,7 +1,7 @@
 import threading
 import traceback
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 
 from video_insight.config import config
 from video_insight.downloader import run_downloader
@@ -9,23 +9,23 @@ from video_insight.video_processor import process_video_folder
 from video_insight.ai_analyzer import AdsAnalyzer
 from video_insight.feishu_syncer import FeishuSyncer
 
-# Global Lock for Single Task Execution
+# 全局锁，用于保证单任务执行
 TASK_LOCK = threading.Lock()
 
-def parse_feishu_url(url: str) -> tuple[Optional[str], Optional[str]]:
+def parse_feishu_url(url: str) -> Tuple[Optional[str], Optional[str]]:
     """
-    Parse Bitable URL to extract app_token and table_id.
-    URL Format: https://{domain}/base/{app_token}?table={table_id}&...
+    解析飞书多维表格链接，提取 app_token 和 table_id。
+    链接格式: https://{domain}/base/{app_token}?table={table_id}&...
     """
     try:
         if "/base/" not in url:
             return None, None
         
-        # Extract App Token
+        # 提取 App Token
         part1 = url.split("/base/")[1]
         app_token = part1.split("?")[0].split("/")[0]
         
-        # Extract Table ID
+        # 提取 Table ID
         table_id = None
         if "table=" in url:
             table_id = url.split("table=")[1].split("&")[0]
@@ -36,12 +36,12 @@ def parse_feishu_url(url: str) -> tuple[Optional[str], Optional[str]]:
 
 def run_pipeline_task(user_id: str, folder_token: str, app_name: str, source_url: str = None, progress_callback=None):
     """
-    Execute the full pipeline:
-    1. Parse Source URL (if provided)
-    2. Create new Bitable App
-    3. Add User as Admin
-    4. Initialize Table Fields
-    5. Run Downloader -> Processor -> Analyzer -> Syncer
+    执行完整的处理管线:
+    1. 解析源表格 URL (如果提供)
+    2. 创建新的多维表格应用 (Bitable App)
+    3. 添加用户为管理员
+    4. 初始化表格字段
+    5. 运行 下载器 -> 处理器 -> 分析器 -> 同步器
     """
     def report_progress(msg):
         print(f"[Progress] {msg}")
@@ -56,12 +56,12 @@ def run_pipeline_task(user_id: str, folder_token: str, app_name: str, source_url
 
     print(f"\n[Task] Starting pipeline for User: {user_id}")
 
-    # Use default folder token if not provided
+    # 如果未提供文件夹 token，使用默认 token
     if not folder_token:
         folder_token = config.FEISHU_FOLDER_TOKEN
         print(f"[Task] Using default folder token: {folder_token}")
     
-    # --- Step 0: Parse Source ---
+    # --- 步骤 0: 解析源 ---
     source_app_token = None
     source_table_id = None
     if source_url:
@@ -72,8 +72,8 @@ def run_pipeline_task(user_id: str, folder_token: str, app_name: str, source_url
     
     syncer = FeishuSyncer()
     
-    # --- Step 1: Create Bitable App ---
-    # Append timestamp to name to ensure uniqueness
+    # --- 步骤 1: 创建多维表格应用 ---
+    # 添加时间戳到名称以确保唯一性
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     full_app_name = f"{app_name}_{timestamp}"
     
@@ -81,49 +81,49 @@ def run_pipeline_task(user_id: str, folder_token: str, app_name: str, source_url
     if not app_token:
         print("[Task] Failed to create Bitable app. Aborting.")
         return
-
-    # --- Step 2: Add Permission (确保创建者拥有权限) ---
+    
+    # --- 步骤 2: 添加权限 (确保创建者拥有权限) ---
     if not syncer.add_member_permission(app_token, user_id):
         print(f"[Task] Failed to add permission for user {user_id}.")
         # 即使添加权限失败也继续，因为应用已经创建在创建者的空间中
-
-    # --- Step 3: Initialize Fields ---
-    # Need to get the default table ID first
+    
+    # --- 步骤 3: 初始化字段 ---
+    # 需要先获取默认的 table ID
     table_id = syncer.get_default_table_id(app_token)
     if not table_id:
         print("[Task] Failed to get default table ID. Aborting.")
         return
         
     syncer.init_table_fields(app_token, table_id)
-
-    # --- Step 4: Run Analysis Pipeline ---
+    
+    # --- 步骤 4: 运行分析管线 ---
     try:
-        # 4.1 Download
+        # 4.1 下载视频
         print(">>> [1/4] Downloading Videos...")
         # report_progress("⬇️ [1/4] 正在下载视频...")
-        # Downloader will report "Task Started"
+        # 下载器会报告 "Task Started"
         run_downloader(source_app_token, source_table_id, report_progress)
-
-        # 4.2 Process (VAD/ASR)
+        
+        # 4.2 处理视频 (VAD/ASR)
         print(">>> [2/4] Processing Videos...")
         # report_progress("🎵 [2/4] 视频下载完成，正在提取音频并进行语音识别 (VAD/ASR)...")
-        # Video Processor will report phases
+        # 视频处理器会报告阶段
         process_video_folder(config.OUTPUT_DIR, config.RESULT_DIR, report_progress)
-
-        # 4.3 AI Analysis
+        
+        # 4.3 AI 分析
         print(">>> [3/4] AI Analysis...")
         # report_progress("🤖 [3/4] 音频提取完成，正在进行 AI 智能分析与截图...")
         
         analyzer = AdsAnalyzer()
-        # Pass source params and progress callback
+        # 传递源参数和进度回调
         analysis_results = analyzer.process(source_app_token, source_table_id, report_progress) 
-
-        # 4.4 Sync to New Table
+        
+        # 4.4 同步到新表格
         print(f">>> [4/4] Syncing to New Table (App: {app_token}, Table: {table_id})...")
         report_progress(f"🔄 分析完成，正在同步结果到飞书多维表格...")
         syncer.sync_data(analysis_results, app_token, table_id)
         
-        # Report Success with Link
+        # 报告成功并附带链接
         table_url = f"{config.FEISHU_DOMAIN}/base/{app_token}?table={table_id}"
         report_progress(f"🎉 任务全部完成！\n🔗 新表格链接: {table_url}\n📂 视频文件保存在: {config.OUTPUT_DIR}")
         
@@ -133,5 +133,3 @@ def run_pipeline_task(user_id: str, folder_token: str, app_name: str, source_url
         print(f"[Task] Pipeline failed: {e}")
         traceback.print_exc()
         return False, None, str(e)
-    finally:
-        pass

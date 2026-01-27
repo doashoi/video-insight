@@ -2,11 +2,12 @@ import re
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Tuple
 from tqdm import tqdm
 from .config import config
 
 class FeishuClient:
-    """Feishu Bitable API Client for downloading records."""
+    """飞书多维表格 API 客户端，用于下载记录。"""
     
     def __init__(self, app_id: str, app_secret: str):
         self.app_id = app_id
@@ -18,7 +19,7 @@ class FeishuClient:
         }
 
     def _get_tenant_access_token(self) -> str:
-        """Get Tenant Access Token."""
+        """获取 Tenant Access Token。"""
         url = f"{config.FEISHU_DOMAIN}/open-apis/auth/v3/tenant_access_token/internal"
         payload = {"app_id": self.app_id, "app_secret": self.app_secret}
         res = requests.post(url, json=payload, timeout=10)
@@ -26,12 +27,12 @@ class FeishuClient:
         return res.json().get("tenant_access_token")
 
     def get_all_records(self, app_token: str, table_id: str) -> list:
-        """Fetch all records from a table with pagination."""
+        """获取表中的所有记录（支持分页）。"""
         all_records = []
         page_token = ""
         has_more = True
         
-        print("🔍 Fetching data from Feishu Bitable...")
+        print("🔍 正在从飞书多维表格获取数据...")
         while has_more:
             url = f"{config.FEISHU_DOMAIN}/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
             params = {"page_size": 100, "page_token": page_token}
@@ -46,14 +47,14 @@ class FeishuClient:
                 has_more = data.get("has_more", False)
                 page_token = data.get("page_token", "")
             except Exception as e:
-                print(f"❌ Error fetching records: {e}")
+                print(f"❌ 获取记录失败: {e}")
                 break
         
-        print(f"✅ Successfully fetched {len(all_records)} records")
+        print(f"✅ 成功获取 {len(all_records)} 条记录")
         return all_records
 
 class VideoDownloader:
-    """Incremental Video Downloader."""
+    """增量视频下载器。"""
     
     FIELDS = {
         "NAME": "素材名称",
@@ -67,30 +68,30 @@ class VideoDownloader:
         self.session = requests.Session()
 
     def sanitize_filename(self, filename: str) -> str:
-        """Sanitize filename to remove illegal characters."""
+        """清理文件名中的非法字符。"""
         if not filename: return "unnamed_video"
         name = re.sub(r'[\\/*?:"<>|]', '_', str(filename))
         return name.strip()
 
-    def download_single(self, name: str, url: str) -> tuple[bool, str, str]:
-        """Download a single video."""
+    def download_single(self, name: str, url: str) -> Tuple[bool, str, str]:
+        """下载单个视频。"""
         try:
-            # 1. Validate URL
+            # 1. 验证 URL
             if not url or not str(url).startswith("http"):
-                return False, name, "Invalid URL"
+                return False, name, "无效的 URL"
 
-            # 2. Prepare filename
+            # 2. 准备文件名
             clean_name = self.sanitize_filename(name)
             if not clean_name.lower().endswith(".mp4"):
                 clean_name += ".mp4"
             
             file_path = self.output_dir / clean_name
 
-            # 3. Incremental check
+            # 3. 增量检查 (文件存在且大小大于0则跳过)
             if file_path.exists() and file_path.stat().st_size > 0:
-                return True, name, "Skipped (Exists)"
+                return True, name, "跳过 (已存在)"
 
-            # 4. Stream download
+            # 4. 流式下载
             resp = self.session.get(url, timeout=60, stream=True)
             resp.raise_for_status()
             
@@ -98,12 +99,12 @@ class VideoDownloader:
                 for chunk in resp.iter_content(chunk_size=1024*1024): # 1MB chunk
                     f.write(chunk)
             
-            return True, name, "Success"
+            return True, name, "成功"
         except Exception as e:
             return False, name, str(e)
 
     def start(self, records: list, progress_callback=None):
-        """Start concurrent download tasks."""
+        """开始并发下载任务。"""
         tasks = []
         
         for r in records:
@@ -123,12 +124,12 @@ class VideoDownloader:
                 tasks.append((name, url))
 
         if not tasks:
-            print("\n⚠️ No valid video links found.")
+            print("\n⚠️ 未找到有效的视频链接。")
             if progress_callback:
                 progress_callback("⚠️ 未找到有效的视频链接。")
             return
 
-        print(f"🚀 Starting download (Threads: {self.max_workers})...")
+        print(f"🚀 开始下载 (线程数: {self.max_workers})...")
         if progress_callback:
             progress_callback(f"🚀 任务已开始，正在下载视频，共计 {len(tasks)} 条...")
 
@@ -143,22 +144,22 @@ class VideoDownloader:
                 for future in as_completed(future_to_video):
                     success, name, msg = future.result()
                     if success:
-                        if msg == "Skipped (Exists)":
+                        if msg == "跳过 (已存在)":
                             skip_count += 1
                         else:
                             success_count += 1
                     else:
                         fail_count += 1
-                        tqdm.write(f"❌ Failed: {name} | Reason: {msg}")
+                        tqdm.write(f"❌ 失败: {name} | 原因: {msg}")
                         if progress_callback:
                             progress_callback(f"❌ 下载失败: {name} | 原因: {msg}")
                     pbar.update(1)
 
         print("\n" + "="*30)
-        print(f"🏁 Download Complete!")
-        print(f"✨ New: {success_count}")
-        print(f"♻️ Skipped: {skip_count}")
-        print(f"📁 Output: {self.output_dir.absolute()}")
+        print(f"🏁 下载完成!")
+        print(f"✨ 新增: {success_count}")
+        print(f"♻️ 跳过: {skip_count}")
+        print(f"📁 输出目录: {self.output_dir.absolute()}")
         print("="*30)
         
         if progress_callback:
@@ -170,7 +171,7 @@ def run_downloader(source_app_token: str = None, source_table_id: str = None, pr
         table_id = source_table_id or config.SOURCE_TABLE_ID
 
         if not app_token or not table_id:
-            print("[Downloader] Missing Source App Token or Table ID.")
+            print("[Downloader] 缺少源 App Token 或 Table ID。")
             if progress_callback:
                 progress_callback("❌ 配置错误: 缺少源 App Token 或 Table ID。")
             return
@@ -182,7 +183,7 @@ def run_downloader(source_app_token: str = None, source_table_id: str = None, pr
         downloader.start(records, progress_callback)
         
     except Exception as e:
-        print(f"💥 Fatal Error: {e}")
+        print(f"💥 严重错误: {e}")
         if progress_callback:
             progress_callback(f"💥 下载器发生严重错误: {e}")
 

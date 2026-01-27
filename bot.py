@@ -6,7 +6,7 @@ from lark_oapi.ws import Client
 import sys
 from pathlib import Path
 
-# Add src to sys.path
+# 添加 src 到 sys.path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
@@ -16,13 +16,13 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTr
 from video_insight.config import config
 from video_insight.core import run_pipeline_task, TASK_LOCK
 
-# Setup logging
+# 设置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("FeishuBot")
 
 def send_message(user_id: str, content: str, msg_type: str = "text"):
-    """Send a message to a user."""
-    # Note: Using API Client for sending messages, not WebSocket Client
+    """向用户发送消息。"""
+    # 注意: 使用 API Client 发送消息，而不是 WebSocket Client
     client = lark_oapi.Client.builder().app_id(config.FEISHU_APP_ID).app_secret(config.FEISHU_APP_SECRET).build()
     
     if msg_type == "text":
@@ -44,7 +44,7 @@ def send_message(user_id: str, content: str, msg_type: str = "text"):
         logger.error(f"Failed to send message: {resp.msg}")
 
 def send_config_card(user_id: str):
-    """Send the analysis configuration card."""
+    """发送分析配置卡片。"""
     card_content = {
         "schema": "2.0",
         "header": {
@@ -125,7 +125,7 @@ def send_config_card(user_id: str):
     send_message(user_id, json.dumps(card_content), "interactive")
 
 def handle_message(data: P2ImMessageReceiveV1):
-    """Handle incoming text messages."""
+    """处理传入的文本消息。"""
     try:
         content = json.loads(data.event.message.content)
         text = content.get("text", "").strip()
@@ -133,7 +133,7 @@ def handle_message(data: P2ImMessageReceiveV1):
         
         logger.info(f"Received message from {user_id}: {text}")
         
-        # Simple keyword trigger
+        # 简单的关键词触发
         if "分析" in text or "start" in text.lower() or "menu" in text.lower():
             send_config_card(user_id)
         else:
@@ -142,9 +142,9 @@ def handle_message(data: P2ImMessageReceiveV1):
         logger.error(f"Error handling message: {e}")
 
 def execute_task(user_id: str, folder_token: str, app_name: str, source_url: str):
-    """Execute the pipeline task in a separate thread."""
+    """在单独的线程中执行管道任务。"""
     try:
-        # Define progress callback bound to this specific user_id
+        # 定义绑定到特定 user_id 的进度回调
         def progress_callback(msg):
             send_message(user_id, msg)
             
@@ -161,7 +161,7 @@ def execute_task(user_id: str, folder_token: str, app_name: str, source_url: str
         logger.info("Task lock released.")
 
 def handle_card_action(data: P2CardActionTrigger):
-    """Handle card button clicks."""
+    """处理卡片按钮点击。"""
     try:
         user_id = data.event.operator.open_id
         action = data.event.action
@@ -170,28 +170,34 @@ def handle_card_action(data: P2CardActionTrigger):
         
         logger.info(f"Card action from {user_id}: {action}")
         
-        # Identify the action
+        # 识别动作
         if action.name == "submit_btn" or action.name == "video_analysis_task_submit" or "source_table_link" in form_data:
-            # Extract inputs
+            # 提取输入
             source_url = form_data.get("source_table_link")
             app_name = form_data.get("task_name")
             folder_token = form_data.get("folder_token")
             
-            # Validation
+            # 验证
             if not source_url:
                 send_message(user_id, "⚠️ 请输入源多维表格链接！")
                 return
 
-            # Attempt to acquire lock before starting
+            # 尝试在开始前获取锁
             if not TASK_LOCK.acquire(blocking=False):
                 send_message(user_id, "⚠️ 系统忙碌中，请稍后再试（当前有任务正在运行）。")
                 return
 
             send_message(user_id, f"✅ 任务已启动！\n名称: {app_name}\n源: {source_url}\n请耐心等待...")
             
-            # Start task in background thread
-            t = threading.Thread(target=execute_task, args=(user_id, folder_token, app_name, source_url))
-            t.start()
+            # 在后台线程启动任务
+            try:
+                t = threading.Thread(target=execute_task, args=(user_id, folder_token, app_name, source_url))
+                t.start()
+            except Exception as e:
+                # 如果线程启动失败，确保释放锁
+                TASK_LOCK.release()
+                logger.error(f"Failed to start thread: {e}")
+                send_message(user_id, "💥 启动任务失败。")
             
     except Exception as e:
         logger.error(f"Error handling card action: {e}")

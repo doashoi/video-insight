@@ -14,7 +14,7 @@ from openpyxl.utils import get_column_letter
 from .config import config
 
 class FeishuClient:
-    """Client to fetch data from Feishu Wiki/Bitable."""
+    """飞书 Wiki/多维表格 数据获取客户端。"""
     def __init__(self, app_id: str, app_secret: str):
         self.app_id = app_id
         self.app_secret = app_secret
@@ -22,7 +22,7 @@ class FeishuClient:
         self.headers = None
 
     def _ensure_token(self):
-        """Ensure valid tenant access token exists."""
+        """确保存在有效的 tenant_access_token。"""
         if not self.token:
             url = f"{config.FEISHU_DOMAIN}/open-apis/auth/v3/tenant_access_token/internal"
             payload = {"app_id": self.app_id, "app_secret": self.app_secret}
@@ -35,11 +35,11 @@ class FeishuClient:
                     "Content-Type": "application/json; charset=utf-8"
                 }
             except Exception as e:
-                print(f"[Feishu Error] Failed to get token: {e}")
+                print(f"[Feishu Error] 获取 Token 失败: {e}")
                 raise
 
     def get_app_token_from_wiki(self, wiki_token: str) -> Optional[str]:
-        """Resolve Wiki Token to Bitable App Token."""
+        """解析 Wiki Token 为多维表格 App Token。"""
         self._ensure_token()
         url = f"{config.FEISHU_DOMAIN}/open-apis/wiki/v2/spaces/get_node"
         params = {"token": wiki_token}
@@ -53,21 +53,21 @@ class FeishuClient:
             obj_token = node.get("obj_token")
             
             if obj_type != "bitable":
-                print(f"[Warning] Wiki node type is '{obj_type}', expected 'bitable'.")
+                print(f"[Warning] Wiki 节点类型是 '{obj_type}', 预期为 'bitable'。")
             
             return obj_token
         except Exception as e:
-                print(f"[Feishu Error] Failed to resolve Wiki node: {e}")
+                print(f"[Feishu Error] 解析 Wiki 节点失败: {e}")
                 raise
 
     def get_all_records(self, app_token: str, table_id: str, view_id: str = None) -> List[Dict]:
-        """Fetch all records from Bitable."""
+        """获取多维表格所有记录。"""
         self._ensure_token()
         all_records = []
         page_token = ""
         has_more = True
         
-        print("🔍 Fetching data from Feishu Bitable...")
+        print("🔍 正在从飞书多维表格获取数据...")
         while has_more:
             url = f"{config.FEISHU_DOMAIN}/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
             params = {"page_size": 100, "page_token": page_token}
@@ -85,10 +85,10 @@ class FeishuClient:
                 has_more = data.get("has_more", False)
                 page_token = data.get("page_token", "")
             except Exception as e:
-                print(f"[Feishu Error] Failed to fetch records: {e}")
+                print(f"[Feishu Error] 获取记录失败: {e}")
                 break
         
-        print(f"✅ Successfully fetched {len(all_records)} records.")
+        print(f"✅ 成功获取 {len(all_records)} 条记录。")
         return all_records
 
 class AdsAnalyzer:
@@ -99,12 +99,12 @@ class AdsAnalyzer:
         self.feishu_client = FeishuClient(config.FEISHU_APP_ID, config.FEISHU_APP_SECRET)
         
         if not self.api_key:
-            print("[Warning] DASHSCOPE_API_KEY not found in environment.")
+            print("[Warning] 环境变量中未找到 DASHSCOPE_API_KEY。")
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def _encode_image(self, image_path: str) -> str:
-        """Encode image to base64."""
+        """将图像编码为 base64。"""
         with open(image_path, "rb") as image_file:
             return base64.b64encode(image_file.read()).decode('utf-8')
 
@@ -156,7 +156,7 @@ class AdsAnalyzer:
 }"""
 
     def _call_qwen_vl(self, image_path: str, text_content: str, performance_data: Dict) -> Optional[Dict]:
-        """Call Qwen-VL-Plus API."""
+        """调用 Qwen-VL-Plus API。"""
         url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -194,18 +194,18 @@ class AdsAnalyzer:
                     content = content.replace("```json", "").replace("```", "").strip()
                     return json.loads(content)
                 else:
-                    print(f"[API Error] Unexpected response: {result}")
+                    print(f"[API Error] 意外响应: {result}")
             
             except Exception as e:
-                print(f"[API Error] Attempt {attempt+1}/3 failed: {e}")
+                print(f"[API Error] 第 {attempt+1}/3 次尝试失败: {e}")
                 time.sleep(2)
         
         return None
 
     def _find_assets(self, material_name: str) -> Tuple[Optional[str], Optional[str]]:
-        """Find contact sheet and transcript for a given material name."""
+        """查找指定素材名称的拼图和字幕文件。"""
         video_dir = self.assets_dir / material_name
-        # Fallback for timestamped folders? Not implemented based on original code, assume exact match
+        # 备选：针对带时间戳的文件夹？未实现，基于原始代码假设完全匹配
         
         if video_dir.exists():
             sheet_path = video_dir / "final_sheet.jpg"
@@ -217,20 +217,20 @@ class AdsAnalyzer:
         return None, None
 
     def _fetch_feishu_data(self, app_token: str = None, table_id: str = None) -> List[Dict]:
-        """Fetch and normalize data from Feishu."""
+        """获取并标准化飞书数据。"""
         target_app_token = app_token
         target_table_id = table_id
 
         if not target_app_token:
-            print("[Feishu] Resolving App Token from Wiki Token...")
+            print("[Feishu] 正在从 Wiki Token 解析 App Token...")
             target_app_token = self.feishu_client.get_app_token_from_wiki(config.WIKI_TOKEN)
         
         if not target_app_token:
-            print("[Error] Failed to get App Token")
+            print("[Error] 获取 App Token 失败")
             return []
             
         print(f"[Feishu] App Token: {target_app_token}")
-        # If table_id is not provided, use config or fetch first table
+        # 如果未提供 table_id，使用配置或获取第一个表
         if not target_table_id:
              target_table_id = config.ANALYSIS_TABLE_ID
              
@@ -240,7 +240,7 @@ class AdsAnalyzer:
         for r in records:
             fields = r.get("fields", {})
             
-            # Normalize Link
+            # 标准化链接
             url_field = fields.get("视频链接")
             url = ""
             if isinstance(url_field, str):
@@ -250,7 +250,7 @@ class AdsAnalyzer:
             elif isinstance(url_field, dict):
                 url = url_field.get("url", "") or url_field.get("link", "")
                 
-            # Normalize Source
+            # 标准化来源
             source_field = fields.get("来源", "")
             source = ""
             if isinstance(source_field, str):
@@ -278,12 +278,12 @@ class AdsAnalyzer:
         return normalized_data
 
     def process(self, app_token: str = None, table_id: str = None, progress_callback=None) -> List[Dict]:
-        """Run analysis and return results (no excel save)."""
+        """运行分析并返回结果 (不保存到 Excel)。"""
         data = self._fetch_feishu_data(app_token, table_id)
         
         results = []
         total_rows = len(data)
-        print(f"Found {total_rows} rows to process.")
+        print(f"发现 {total_rows} 行待处理数据。")
         if progress_callback:
             progress_callback(f"🤖 开始 AI 分析，共 {total_rows} 条数据...")
 
@@ -296,7 +296,7 @@ class AdsAnalyzer:
             if not material_name:
                 continue
                 
-            print(f"\n[{index+1}/{total_rows}] Processing: {material_name}")
+            print(f"\n[{index+1}/{total_rows}] 正在处理: {material_name}")
             
             sheet_path, text_path = self._find_assets(material_name)
             
@@ -310,7 +310,7 @@ class AdsAnalyzer:
             cvr = activations / clicks if clicks > 0 else 0
 
             if sheet_path and text_path:
-                print("  Found local assets. Calling AI...")
+                print("  发现本地素材。正在调用 AI...")
                 
                 try:
                     with open(text_path, 'r', encoding='utf-8') as f:
@@ -328,17 +328,17 @@ class AdsAnalyzer:
                     ai_res = self._call_qwen_vl(sheet_path, transcript, perf_data)
                     if ai_res:
                         analysis_result = ai_res
-                        print("  AI Analysis Complete.")
+                        print("  AI 分析完成。")
                     else:
-                        print("  AI Analysis Failed.")
+                        print("  AI 分析失败。")
                         if progress_callback:
                             progress_callback(f"❌ {material_name}: AI 分析失败 (返回空)")
                 except Exception as e:
-                    print(f"  Error during AI analysis: {e}")
+                    print(f"  AI 分析过程中出错: {e}")
                     if progress_callback:
                         progress_callback(f"💥 {material_name}: AI 分析出错: {e}")
             else:
-                print("  Assets not found in output directory.")
+                print("  输出目录中未找到素材。")
                 if progress_callback:
                     progress_callback(f"⚠️ {material_name}: 未找到本地素材 (跳过分析)")
                 analysis_result = {
@@ -372,17 +372,17 @@ class AdsAnalyzer:
             
             time.sleep(1)
 
-        print(f"Analysis complete. Generated {len(results)} items.")
+        print(f"分析完成。生成了 {len(results)} 条结果。")
         if progress_callback:
             progress_callback(f"✅ AI 分析全部完成，生成 {len(results)} 条结果。")
         return results
 
-    # Legacy method kept for CLI compatibility if needed, but unused in new pipeline
+    # 保留旧方法以兼容 CLI (如果需要)，但在新管线中未使用
     def _save_excel(self, results: List[Dict]):
         pass
 
 def run_analyzer():
-    print("🚀 Starting Ads Analysis...")
+    print("🚀 开始广告分析...")
     analyzer = AdsAnalyzer()
     analyzer.process()
 

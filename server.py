@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request, BackgroundTasks
 import sys
 from pathlib import Path
 
-# Add src to sys.path
+# 添加 src 到 sys.path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
@@ -17,16 +17,16 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTr
 from video_insight.config import config
 from video_insight.core import run_pipeline_task, TASK_LOCK
 
-# Setup logging
+# 设置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("FeishuServer")
 
 app = FastAPI()
 
-# --- Helper Functions ---
+# --- 辅助函数 ---
 
 def send_message(user_id: str, content: str, msg_type: str = "text"):
-    """Send a message to a user."""
+    """向用户发送消息。"""
     client = lark_oapi.Client.builder().app_id(config.FEISHU_APP_ID).app_secret(config.FEISHU_APP_SECRET).build()
     
     if msg_type == "text":
@@ -48,20 +48,20 @@ def send_message(user_id: str, content: str, msg_type: str = "text"):
         logger.error(f"Failed to send message: {resp.msg}")
 
 def extract_folder_token(text: str) -> str:
-    """Extract folder token from URL or text."""
+    """从 URL 或文本中提取文件夹 token。"""
     if not text:
         return ""
-    # Try to match folder/TOKEN pattern
+    # 尝试匹配 folder/TOKEN 模式
     match = re.search(r"folder\/([a-zA-Z0-9]+)", text)
     if match:
         return match.group(1)
-    # Check if it looks like a token
+    # 检查是否看起来像 token
     if re.match(r"^fld[a-zA-Z0-9]+$", text):
         return text
     return ""
 
 def send_config_card(user_id: str):
-    """Send the analysis configuration card."""
+    """发送分析配置卡片。"""
     card_content = {
         "schema": "2.0",
         "header": {
@@ -141,12 +141,12 @@ def send_config_card(user_id: str):
     
     send_message(user_id, json.dumps(card_content), "interactive")
 
-# --- Logic Handlers ---
+# --- 逻辑处理程序 ---
 
 def execute_task(user_id: str, folder_token: str, app_name: str, source_url: str):
-    """Execute the pipeline task."""
+    """执行管道任务。"""
     try:
-        # Define progress callback bound to this specific user_id
+        # 定义绑定到特定 user_id 的进度回调
         def progress_callback(msg):
             send_message(user_id, msg)
             
@@ -172,7 +172,7 @@ def execute_task(user_id: str, folder_token: str, app_name: str, source_url: str
         logger.info("Task lock released.")
 
 def handle_message(data: P2ImMessageReceiveV1):
-    """Handle incoming text messages."""
+    """处理传入的文本消息。"""
     try:
         content = json.loads(data.event.message.content)
         text = content.get("text", "").strip()
@@ -180,7 +180,7 @@ def handle_message(data: P2ImMessageReceiveV1):
         
         logger.info(f"Received message from {user_id}: {text}")
         
-        # Simple keyword trigger
+        # 简单的关键词触发
         if "分析" in text or "start" in text.lower() or "menu" in text.lower():
             send_config_card(user_id)
         else:
@@ -189,7 +189,7 @@ def handle_message(data: P2ImMessageReceiveV1):
         logger.error(f"Error handling message: {e}")
 
 def handle_card_action(data: P2CardActionTrigger):
-    """Handle card button clicks."""
+    """处理卡片按钮点击。"""
     try:
         user_id = data.event.operator.open_id
         action = data.event.action
@@ -198,68 +198,76 @@ def handle_card_action(data: P2CardActionTrigger):
         logger.info(f"Card action from {user_id}: {action}")
         
         if action.name == "submit_btn" or action.name == "video_analysis_task_submit" or "source_table_link" in form_data:
-            # Extract inputs
+            # 提取输入
             source_url = form_data.get("source_table_link")
             app_name = form_data.get("task_name")
             folder_link = form_data.get("folder_link", "")
             
-            # Extract Token
+            # 提取 Token
             folder_token = extract_folder_token(folder_link)
             
-            # Validation
+            # 验证
             if not source_url:
                 send_message(user_id, "⚠️ 请输入源多维表格链接！")
                 return
 
-            # Attempt to acquire lock before starting
+            # 尝试在开始前获取锁
             if not TASK_LOCK.acquire(blocking=False):
                 send_message(user_id, "⚠️ 系统忙碌中，请稍后再试（当前有任务正在运行）。")
                 return
 
             send_message(user_id, f"✅ 任务已启动！\n名称: {app_name}\n源: {source_url}\n请耐心等待...")
             
-            # We need to run this in background.
-            # But handle_card_action is called by Dispatcher synchronously.
-            # We can't access FastAPI BackgroundTasks here easily unless we pass it?
-            # Solution: Use threading here as before, because EventDispatcherHandler is just a function call.
-            # OR: Since we are in FastAPI, we can use the app's background tasks if we invoke it differently.
-            # But EventDispatcherHandler hides the request context.
-            # So Threading is still the easiest way for "Fire and Forget" inside the handler.
-            # However, for FC, Threading is risky if the process freezes.
-            # But we are using "Custom Container" with "Always On" or Async Invoke.
-            # If using FC Async Invoke, we should trigger another function.
-            # For MVP, Threading is fine if timeout is long enough.
+            # 我们需要在后台运行此任务。
+            # 但是 handle_card_action 被 Dispatcher 同步调用。
+            # 我们可以在这里使用 threading，就像之前一样，因为 EventDispatcherHandler 只是一个函数调用。
+            # 或者：因为我们在 FastAPI 中，如果我们以不同方式调用它，我们可以使用 app 的后台任务。
+            # 但 EventDispatcherHandler 隐藏了请求上下文。
+            # 所以 Threading 仍然是处理程序中“即发即弃”的最简单方法。
+            # 但是，对于 FC，如果进程冻结，Threading 是有风险的。
+            # 但我们使用的是具有“始终开启”或异步调用的“自定义容器”。
+            # 如果使用 FC 异步调用，我们应该触发另一个函数。
+            # 对于 MVP，如果超时时间足够长，Threading 是可以的。
             
-            t = threading.Thread(target=execute_task, args=(user_id, folder_token, app_name, source_url))
-            t.start()
+            try:
+                t = threading.Thread(target=execute_task, args=(user_id, folder_token, app_name, source_url))
+                t.start()
+            except Exception as e:
+                TASK_LOCK.release()
+                logger.error(f"Failed to start thread: {e}")
+                send_message(user_id, "💥 启动任务失败。")
             
     except Exception as e:
         logger.error(f"Error handling card action: {e}")
 
-# --- Event Handler ---
-event_handler = EventDispatcherHandler.builder(config.FEISHU_ENCRYPT_KEY if hasattr(config, 'FEISHU_ENCRYPT_KEY') else "", config.FEISHU_VERIFICATION_TOKEN if hasattr(config, 'FEISHU_VERIFICATION_TOKEN') else "") \
+# --- 事件处理程序 ---
+# 确保 Token 不为 None
+verification_token = config.FEISHU_VERIFICATION_TOKEN or ""
+encrypt_key = config.FEISHU_ENCRYPT_KEY or ""
+
+event_handler = EventDispatcherHandler.builder(encrypt_key, verification_token) \
     .register_p2_im_message_receive_v1(handle_message) \
     .register_p2_card_action_trigger(handle_card_action) \
     .build()
 
 @app.post("/webhook/event")
 async def webhook_event(request: Request):
-    # 1. Parse Request
+    # 1. 解析请求
     try:
         req_body = await request.body()
         req_dict = json.loads(req_body)
     except:
         return {"msg": "invalid json"}
 
-    # 2. Challenge Check
+    # 2. 挑战检查 (Challenge Check)
     if "challenge" in req_dict:
         return {"challenge": req_dict["challenge"]}
     
-    # 3. Dispatch
-    # Create a Lark Request object manually
-    # Note: event_handler.do(req) expects a Lark Request object
-    # We can simplify: Lark's adapter for Flask/Django does this.
-    # For FastAPI, we can construct it.
+    # 3. 分发
+    # 手动创建一个 Lark Request 对象
+    # 注意: event_handler.do(req) 期望一个 Lark Request 对象
+    # 我们可以简化: Lark 的 Flask/Django 适配器会做这件事。
+    # 对于 FastAPI，我们可以构建它。
     
     headers = dict(request.headers)
     lark_req = lark_oapi.parse_req(
@@ -270,10 +278,10 @@ async def webhook_event(request: Request):
         )
     )
     
-    # 4. Handle
+    # 4. 处理
     lark_resp = event_handler.do(lark_req)
     
-    # 5. Return Response
+    # 5. 返回响应
     return {
         "code": lark_resp.code,
         "msg": lark_resp.msg,
@@ -282,5 +290,5 @@ async def webhook_event(request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    # FC Custom Container listens on 9000 by default usually, or we config it.
+    # FC 自定义容器通常监听 9000 端口，或者我们配置它。
     uvicorn.run(app, host="0.0.0.0", port=9000)
