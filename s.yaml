@@ -1,37 +1,45 @@
-edition: 1.0.0
-name: video-insight-app
+edition: 3.0.0
+name: video-insight
 access: default
 
-services:
+resources:
   video-insight:
-    component: fc
+    component: fc3
     props:
       region: cn-hangzhou
-      service:
-        name: video-insight
-        description: "Video Insight Feishu Bot"
-        internetAccess: true
-      function:
-        name: bot-processor
-        description: "Process video analysis tasks"
-        runtime: custom-container
-        caPort: 9000
-        memorySize: 4096
-        timeout: 900
-        customContainerConfig:
-          image: "registry.cn-hangzhou.aliyuncs.com/YOUR_NAMESPACE/video-insight:latest"
-        environmentVariables:
-          FEISHU_APP_ID: ${env(FEISHU_APP_ID)}
-          FEISHU_APP_SECRET: ${env(FEISHU_APP_SECRET)}
-          FEISHU_VERIFICATION_TOKEN: ${env(FEISHU_VERIFICATION_TOKEN)}
-          FEISHU_ENCRYPT_KEY: ${env(FEISHU_ENCRYPT_KEY)}
-          FEISHU_FOLDER_TOKEN: "Vu7IfSC4iluS4KdgsSfctge8nAG"
-          DASHSCOPE_API_KEY: ${env(DASHSCOPE_API_KEY)}
-          TEMP_CLEANUP_ENABLED: "true"
+      functionName: bot-processor
+      description: "Video Insight Bot (FC 3.0)"
+      runtime: custom-container
+      timeout: 900
+      memorySize: 4096
+      cpu: 2.0
+      diskSize: 512
+      instanceConcurrency: 1
+      internetAccess: true
+      customContainerConfig:
+        image: "registry.cn-hangzhou.aliyuncs.com/YOUR_NAMESPACE/video-insight:latest"
+        port: 9000
+        accelerationType: 'None'
+      environmentVariables:
+        FEISHU_APP_ID: ${env(FEISHU_APP_ID)}
+        FEISHU_APP_SECRET: ${env(FEISHU_APP_SECRET)}
+        FEISHU_VERIFICATION_TOKEN: ${env(FEISHU_VERIFICATION_TOKEN)}
+        FEISHU_ENCRYPT_KEY: ${env(FEISHU_ENCRYPT_KEY)}
+        FEISHU_FOLDER_TOKEN: ${env(FEISHU_FOLDER_TOKEN)}
+        DASHSCOPE_API_KEY: ${env(DASHSCOPE_API_KEY)}
+        SOURCE_APP_TOKEN: ${env(SOURCE_APP_TOKEN)}
+        SOURCE_TABLE_ID: ${env(SOURCE_TABLE_ID)}
+        WIKI_TOKEN: ${env(WIKI_TOKEN)}
+        ANALYSIS_TABLE_ID: ${env(ANALYSIS_TABLE_ID)}
+        ANALYSIS_VIEW_ID: ${env(ANALYSIS_VIEW_ID)}
+        DEST_APP_TOKEN: ${env(DEST_APP_TOKEN)}
+        DEST_TABLE_ID: ${env(DEST_TABLE_ID)}
+        TEMP_CLEANUP_ENABLED: "true"
+        PYTHONUNBUFFERED: "1"
       triggers:
-        - name: http-trigger
-          type: http
-          config:
+        - triggerName: http-trigger
+          triggerType: http
+          triggerConfig:
             authType: anonymous
             methods:
               - POST
