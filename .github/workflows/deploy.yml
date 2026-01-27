@@ -86,7 +86,7 @@ jobs:
                 customContainerConfig:
                   image: "${{ secrets.ACR_REGISTRY_URL }}/${{ secrets.ACR_NAMESPACE }}/video-insight:${{ github.sha }}"
                   port: 9000
-                  accelerationType: None  # 显式关闭镜像加速，彻底解决 optimization pending 卡死问题
+                  accelerationType: 'None'  # 显式关闭镜像加速 (加引号确保生效)，解决 optimization pending 卡死问题
                 environmentVariables:
                   # 飞书机器人配置
                   FEISHU_APP_ID: "${{ secrets.FEISHU_APP_ID }}"
@@ -112,6 +112,10 @@ jobs:
                       methods:
                         - POST
           EOF
+          
+          # 关键优化：将公网镜像地址替换为 VPC 内网地址 (registry-vpc)，加速 FC 拉取并避免超时
+          # 注意：仅当 Region 为 cn-hangzhou 时有效，且 FC 与 ACR 在同一地域
+          sed -i 's|registry.cn-hangzhou.aliyuncs.com|registry-vpc.cn-hangzhou.aliyuncs.com|g' s.yaml
           
           echo "✅ 生成的 s.yaml 配置："
           cat s.yaml | grep -v "FEISHU_APP_SECRET\|FEISHU_ENCRYPT_KEY" || true
