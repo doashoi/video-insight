@@ -18,6 +18,10 @@ jobs:
       # =============== 2. Docker 环境准备 ===============
       - name: 🐳 配置 Docker Buildx（启用构建缓存加速）
         uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:master
+            env.BUILDKIT_PROGRESS=plain
 
       # =============== 3. ACR 登录（关键修复：Personal CR 专属域名） ===============
       - name: 🔑 登录阿里云容器镜像服务 (Personal CR)
@@ -42,11 +46,42 @@ jobs:
           tags: |
             ${{ secrets.ACR_REGISTRY_URL }}/${{ secrets.ACR_NAMESPACE }}/video-insight:${{ github.sha }}
             ${{ secrets.ACR_REGISTRY_URL }}/${{ secrets.ACR_NAMESPACE }}/video-insight:latest
+          # 关键修复：强制输出标准 OCI Manifest，包含完整架构元数据
+          outputs: type=image,oci-mediatypes=true,push-by-digest=true,name-canonical=true
           cache-from: type=gha  # 从 GitHub Actions 缓存加载层
           cache-to: type=gha,mode=max  # 将新层保存到缓存
           build-args: |
             BUILD_DATE=${{ github.event.head_commit.timestamp }}
             VCS_REF=${{ github.sha }}
+
+      # =============== 4.1 镜像架构防御性校验 (Fail Fast) ===============
+      - name: 🛡️ 验证镜像 Manifest (确保架构为 amd64)
+        run: |
+          # 安装 crane 工具 (Google 容器注册表工具)
+          curl -sL "https://github.com/google/go-containerregistry/releases/download/v0.19.0/go-containerregistry_Linux_x86_64.tar.gz" | tar -xz -C /usr/local/bin crane
+          
+          echo "🔍 正在检查镜像架构..."
+          IMAGE_URI="${{ secrets.ACR_REGISTRY_URL }}/${{ secrets.ACR_NAMESPACE }}/video-insight:${{ github.sha }}"
+          
+          # 使用 crane 获取 manifest 配置
+          # 注意：需要传递认证信息
+          export CRANE_USERNAME="${{ secrets.ALIYUN_ACCOUNT_ID }}"
+          export CRANE_PASSWORD="${{ secrets.ALIYUN_PASSWORD }}"
+          
+          # 登录
+          echo "${{ secrets.ALIYUN_PASSWORD }}" | crane auth login ${{ secrets.ACR_REGISTRY_URL }} -u "${{ secrets.ALIYUN_ACCOUNT_ID }}" --password-stdin
+          
+          # 获取架构信息
+          ARCH=$(crane config "$IMAGE_URI" | grep -o '"architecture":"[^"]*"' | cut -d'"' -f4)
+          
+          echo "✅ 检测到镜像架构: $ARCH"
+          
+          if [ "$ARCH" != "amd64" ]; then
+            echo "❌ 严重错误: 镜像架构不是 amd64 (检测值: $ARCH)"
+            echo "   FC 3.0 无法运行非 amd64 镜像，部署已终止以节省时间。"
+            exit 1
+          fi
+          echo "🎉 镜像架构校验通过！"
 
       # =============== 5. 安装 Serverless Devs（阿里云函数计算 CLI） ===============
       - name: ⚙️ 安装 Serverless Devs 工具
@@ -116,7 +151,9 @@ jobs:
           
           # 关键优化：将公网镜像地址替换为 VPC 内网地址 (registry-vpc)，加速 FC 拉取并避免超时
           # 注意：仅当 Region 为 cn-hangzhou 时有效，且 FC 与 ACR 在同一地域
+          # 优化正则：同时兼容标准版 (registry.cn-hangzhou...) 和 个人版专属域名 (...cn-hangzhou.cr.aliyuncs.com)
           sed -i 's|registry.cn-hangzhou.aliyuncs.com|registry-vpc.cn-hangzhou.aliyuncs.com|g' s.yaml
+          sed -i 's|\.cn-hangzhou\.cr\.aliyuncs\.com|-vpc.cn-hangzhou.cr.aliyuncs.com|g' s.yaml
           
           echo "✅ 生成的 s.yaml 配置："
           cat s.yaml | grep -v "FEISHU_APP_SECRET\|FEISHU_ENCRYPT_KEY" || true
