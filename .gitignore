@@ -28,4 +28,4 @@ ffmpeg_tool/
 .trae/
 
 # API信息
-.env/
+.env
