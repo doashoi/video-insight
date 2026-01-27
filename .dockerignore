@@ -1,0 +1,13 @@
+.git/
+.gitignore
+.env
+.env.*
+venv/
+.venv/
+__pycache__/
+*.md
+s.yaml
+DEPLOY_TO_FC.md
+PROJECT_DOC.md
+CLOUD_DEPLOYMENT_TUTORIAL.md
+.trae/
