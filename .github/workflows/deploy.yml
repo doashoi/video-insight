@@ -65,69 +65,73 @@ jobs:
       # =============== 7. 动态生成部署配置（安全注入环境变量） ===============
       - name: 📝 生成函数计算部署配置 (s.yaml)
         run: |
-          # 创建 s.yaml 配置文件（避免将敏感信息提交到仓库）
+          # 创建 s.yaml 配置文件（适配 FC 3.0）
           cat > s.yaml <<EOF
-          services:
+          resources:
             video-insight:
-              component: fc
+              component: fc3
               props:
                 region: cn-hangzhou
-                service:
-                  name: video-insight
-                  internetAccess: true  # 开启公网访问（飞书回调需要）
-                  logConfig:
-                    project: video-insight-logs
-                    logstore: function-log
-                function:
-                  name: bot-processor
-                  runtime: custom-container  # 使用自定义容器运行时
-                  caPort: 9000              # 容器内服务监听端口（与 server.py 一致）
-                  memorySize: 4096          # 4GB 内存（视频处理最低要求）
-                  timeout: 900              # 15分钟超时（长视频处理需要）
-                  instanceConcurrency: 1    # 单实例并发数（避免资源竞争）
-                  customContainerConfig:
-                    # 关键修复：使用专属域名的完整镜像地址
-                    image: "${{ secrets.ACR_REGISTRY_URL }}/${{ secrets.ACR_NAMESPACE }}/video-insight:${{ github.sha }}"
-                  environmentVariables:
-                    # 飞书机器人配置（从 GitHub Secrets 安全注入）
-                    FEISHU_APP_ID: "${{ secrets.FEISHU_APP_ID }}"
-                    FEISHU_APP_SECRET: "${{ secrets.FEISHU_APP_SECRET }}"
-                    FEISHU_VERIFICATION_TOKEN: "${{ secrets.FEISHU_VERIFICATION_TOKEN }}"
-                    FEISHU_ENCRYPT_KEY: "${{ secrets.FEISHU_ENCRYPT_KEY }}"
-                    # AI Model Config
-                    DASHSCOPE_API_KEY: "${{ secrets.DASHSCOPE_API_KEY }}"
-                    # 其他配置
-                    TEMP_CLEANUP_ENABLED: "true"
-                    PYTHONUNBUFFERED: "1"  # 实时输出日志
+                functionName: bot-processor
+                description: "Video Insight Bot (FC 3.0)"
+                runtime: custom-container
+                timeout: 900
+                memorySize: 4096
+                instanceConcurrency: 1
+                internetAccess: true
+                customContainerConfig:
+                  image: "${{ secrets.ACR_REGISTRY_URL }}/${{ secrets.ACR_NAMESPACE }}/video-insight:${{ github.sha }}"
+                  port: 9000
+                environmentVariables:
+                  # 飞书机器人配置
+                  FEISHU_APP_ID: "${{ secrets.FEISHU_APP_ID }}"
+                  FEISHU_APP_SECRET: "${{ secrets.FEISHU_APP_SECRET }}"
+                  FEISHU_VERIFICATION_TOKEN: "${{ secrets.FEISHU_VERIFICATION_TOKEN }}"
+                  FEISHU_ENCRYPT_KEY: "${{ secrets.FEISHU_ENCRYPT_KEY }}"
+                  # AI Model Config
+                  DASHSCOPE_API_KEY: "${{ secrets.DASHSCOPE_API_KEY }}"
+                  # 其他配置
+                  TEMP_CLEANUP_ENABLED: "true"
+                  PYTHONUNBUFFERED: "1"
+                logConfig:
+                  project: video-insight-logs
+                  logstore: function-log
+                  enableRequestMetrics: true
+                  enableInstanceMetrics: true
                 triggers:
-                  - name: http-trigger
-                    type: http
-                    config:
-                      authType: anonymous  # 允许匿名访问（飞书回调需要）
+                  - triggerName: http-trigger
+                    triggerType: http
+                    triggerConfig:
+                      authType: anonymous
                       methods:
                         - POST
           EOF
           
-          # 显示生成的配置（调试用，敏感信息已脱敏）
           echo "✅ 生成的 s.yaml 配置："
           cat s.yaml | grep -v "FEISHU_APP_SECRET\|FEISHU_ENCRYPT_KEY" || true
 
       # =============== 8. 部署到函数计算 ===============
-      - name: 🚀 部署到阿里云函数计算
+      - name: 🚀 部署到阿里云函数计算 (FC 3.0)
         id: deploy
         run: |
           echo "🔧 开始部署函数计算服务..."
-          # --use-local: 使用当前目录的 s.yaml
-          # -y: 自动确认所有提示
           s deploy --use-local -y 2>&1 | tee deploy.log
           
-          # 从部署日志中提取 HTTP 触发器 URL
-          if grep -q "HTTP Trigger URL" deploy.log; then
-            TRIGGER_URL=$(grep "HTTP Trigger URL" deploy.log | awk -F': ' '{print $2}' | tr -d '\r')
-            echo "trigger_url=${TRIGGER_URL}" >> $GITHUB_OUTPUT
-            echo "✅ HTTP 触发器创建成功: ${TRIGGER_URL}"
+          # 提取 FC 3.0 的 Trigger URL
+          # 尝试从日志中匹配 .fcapp.run 的 URL
+          if grep -q "fcapp.run" deploy.log; then
+            # 提取包含 https 和 fcapp.run 的行，并清洗
+            TRIGGER_URL=$(grep -o 'https://[^[:space:]]*\.fcapp\.run' deploy.log | head -n 1)
+            
+            if [ -n "$TRIGGER_URL" ]; then
+              echo "trigger_url=${TRIGGER_URL}" >> $GITHUB_OUTPUT
+              echo "✅ HTTP 触发器创建成功: ${TRIGGER_URL}"
+            else
+              echo "⚠️  找到 fcapp.run 但无法提取完整 URL，请检查日志"
+              echo "trigger_url=未找到" >> $GITHUB_OUTPUT
+            fi
           else
-            echo "⚠️  未在日志中找到触发器 URL（首次部署可能需要手动在控制台查看）"
+            echo "⚠️  未在日志中找到触发器 URL"
             echo "trigger_url=未找到" >> $GITHUB_OUTPUT
           fi
 
