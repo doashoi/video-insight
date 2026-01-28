@@ -153,8 +153,11 @@ async def webhook_event(request: Request):
         logger.info(f"SDK Response Status Code: {status_code}")
         
         # 如果 SDK 返回 500，记录一下 body
+        # lark-oapi 的 RawResponse 可能没有 body 属性，而是 content
+        resp_content = getattr(lark_resp, "content", getattr(lark_resp, "body", b""))
+        
         if status_code == 500:
-            err_msg = lark_resp.body.decode('utf-8') if lark_resp.body else 'Empty'
+            err_msg = resp_content.decode('utf-8') if resp_content else 'Empty'
             logger.error(f"SDK returned 500. Body: {err_msg}")
             # 返回 200 给飞书，避免飞书不断重试，但内容包含错误信息
             return Response(
@@ -164,7 +167,7 @@ async def webhook_event(request: Request):
             )
 
         return Response(
-            content=lark_resp.body or b"", 
+            content=resp_content or b"", 
             status_code=status_code,
             media_type="application/json"
         )

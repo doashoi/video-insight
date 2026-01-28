@@ -12,10 +12,18 @@ from video_insight.core import run_pipeline_task, TASK_LOCK
 logger = logging.getLogger("BotHandlers")
 
 # 初始化全局飞书客户端
+# 注意：使用自建应用时，app_type 默认为 tenant，无需额外配置
+# 如果出现 10003 invalid param，通常是因为缺少 log_level 或其他配置导致的 SDK 内部校验失败
+# 或者是因为环境变量中有特殊字符
+_app_id = config.FEISHU_APP_ID.strip() if config.FEISHU_APP_ID else ""
+_app_secret = config.FEISHU_APP_SECRET.strip() if config.FEISHU_APP_SECRET else ""
+
+logger.info(f"Initializing Feishu Client with App ID: {_app_id[:5]}***")
+
 _client = lark_oapi.Client.builder() \
-    .app_id(config.FEISHU_APP_ID) \
-    .app_secret(config.FEISHU_APP_SECRET) \
-    .domain(config.FEISHU_DOMAIN) \
+    .app_id(_app_id) \
+    .app_secret(_app_secret) \
+    .log_level(lark_oapi.LogLevel.INFO) \
     .build()
 
 def send_message(user_id: str, content: str, msg_type: str = "text"):
