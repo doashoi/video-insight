@@ -74,12 +74,12 @@ class VideoAnalyzer:
 
         # 1. 语音识别 (使用 DashScope 录音文件识别 API)
         try:
-            file_url = self._upload_file_to_dashscope(str(audio_path))
-            if not file_url:
+            file_id = self._upload_file_to_dashscope(str(audio_path))
+            if not file_id:
                 print("[Error] 音频上传失败，无法进行 ASR 识别")
                 return None
             
-            task_id = self._submit_asr_task(file_url)
+            task_id = self._submit_asr_task(file_id)
             if not task_id:
                 print("[Error] ASR 任务提交失败")
                 return None
@@ -182,19 +182,26 @@ class VideoAnalyzer:
                     return None
                     
                 res = resp.json()
-                # 兼容多种响应格式
-                file_id = res.get('id')
-                if not file_id and 'data' in res:
+                # 优先解析 nested 格式 (purpose='audio' 时的返回)
+                file_id = None
+                if 'data' in res and 'uploaded_files' in res['data']:
                     uploaded_files = res['data'].get('uploaded_files', [])
                     if uploaded_files:
                         file_id = uploaded_files[0].get('file_id')
+                
+                # 回退到根目录 id (普通上传格式)
+                if not file_id:
+                    file_id = res.get('id')
 
                 if file_id:
                     print(f"[Upload Success] File ID: {file_id}")
                     sys.stdout.flush()
-                    return f"dashscope://sdk/file/{file_id}"
+                    # 注意：如果是从 uploaded_files 获取的，返回的是纯 ID，需要后续处理
+                    return file_id
                 else:
                     print(f"[Upload Error] 响应中缺少有效 id: {res}")
+                    sys.stdout.flush()
+                    return None
                     sys.stdout.flush()
                     return None
         except Exception as e:
@@ -207,7 +214,7 @@ class VideoAnalyzer:
         sys.stdout.flush()
         return None
 
-    def _submit_asr_task(self, file_url: str) -> Optional[str]:
+    def _submit_asr_task(self, file_id: str) -> Optional[str]:
         """提交 ASR 任务。"""
         import sys
         url = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
@@ -216,10 +223,11 @@ class VideoAnalyzer:
             "Content-Type": "application/json",
             "X-DashScope-Async": "enable"
         }
+        # 统一使用 file_ids 方式引用已上传文件
         payload = {
-            "model": "fun-asr-mtl-2025-08-25", # 
+            "model": "fun-asr-mtl-2025-08-25",
             "input": {
-                "file_urls": [file_url]
+                "file_ids": [file_id]
             },
             "parameters": {
                 "language_hints": ["zh", "en"],
@@ -228,7 +236,7 @@ class VideoAnalyzer:
             }
         }
         try:
-            print(f"[ASR] 正在提交任务，文件 URL: {file_url}")
+            print(f"[ASR] 正在提交任务，File ID: {file_id}")
             sys.stdout.flush()
             resp = requests.post(url, headers=headers, json=payload, timeout=20)
             if resp.status_code != 200:
