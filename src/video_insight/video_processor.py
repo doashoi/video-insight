@@ -156,13 +156,10 @@ class VideoAnalyzer:
         payload = {
             "model": "fun-asr-mtl-2025-08-25", # 切换到支持同步/Base64 的模型
             "input": {
-                "audio": audio_base64,
-                "sample_rate": 16000
+                "audio": audio_base64
             },
             "parameters": {
-                "language_hints": ["zh", "en"],
-                # 同步接口参数略有不同，通常不需要 timestamp_alignment_enabled
-                # 但 paraformer-realtime-v2 可能支持 words 输出
+                "language_hints": ["zh", "en"]
             }
         }
         try:
