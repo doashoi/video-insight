@@ -1,7 +1,7 @@
 import json
 import logging
 import lark_oapi
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 import sys
 from pathlib import Path
 
@@ -30,18 +30,10 @@ event_handler = EventDispatcherHandler.builder(encrypt_key, verification_token) 
 
 @app.post("/webhook/event")
 async def webhook_event(request: Request):
-    # 1. 解析请求
-    try:
-        req_body = await request.body()
-        req_dict = json.loads(req_body)
-    except Exception:
-        return {"msg": "invalid json"}
-
-    # 2. 挑战检查 (Challenge Check)
-    if "challenge" in req_dict:
-        return {"challenge": req_dict["challenge"]}
+    # 1. 获取请求体
+    req_body = await request.body()
     
-    # 3. 分发并处理
+    # 2. 构造 Lark 请求对象
     headers = dict(request.headers)
     lark_req = lark_oapi.parse_req(
         arg=lark_oapi.Request(
@@ -51,14 +43,16 @@ async def webhook_event(request: Request):
         )
     )
     
+    # 3. 分发处理 (SDK 会自动处理 Challenge 和解密)
     lark_resp = event_handler.do(lark_req)
     
-    # 4. 返回响应
-    return {
-        "code": lark_resp.code,
-        "msg": lark_resp.msg,
-        "data": lark_resp.data
-    }
+    # 4. 直接返回 SDK 的响应
+    # 注意：lark_resp.body 是 bytes 或 str，Response 会直接返回它
+    return Response(
+        content=lark_resp.body, 
+        status_code=lark_resp.code,
+        media_type="application/json"
+    )
 
 # --- 阿里云函数计算 (FC) 初始化适配器 ---
 @app.post("/initialize")
