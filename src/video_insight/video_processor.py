@@ -182,13 +182,21 @@ class VideoAnalyzer:
                     return None
                     
                 res = resp.json()
+                # 兼容多种响应格式
                 file_id = res.get('id')
+                if not file_id and 'data' in res:
+                    uploaded_files = res['data'].get('uploaded_files', [])
+                    if uploaded_files:
+                        file_id = uploaded_files[0].get('file_id')
+
                 if file_id:
                     print(f"[Upload Success] File ID: {file_id}")
                     sys.stdout.flush()
                     return f"dashscope://sdk/file/{file_id}"
                 else:
-                    print(f"[Upload Error] 响应中缺少 id: {res}")
+                    print(f"[Upload Error] 响应中缺少有效 id: {res}")
+                    sys.stdout.flush()
+                    return None
         except Exception as e:
             print(f"[Upload Error] 异常详情: {str(e)}")
             if 'resp' in locals():
