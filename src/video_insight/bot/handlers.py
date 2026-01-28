@@ -151,6 +151,22 @@ def send_config_card(user_id: str):
 def execute_task(user_id: str, source_url: str, template_url: str = None):
     """执行管道任务。"""
     try:
+        # 调试代码：检查环境中的 FFmpeg
+        import subprocess
+        logger.info("[Debug] Checking environment for FFmpeg...")
+        try:
+            res = subprocess.check_output(["ffmpeg", "-version"], stderr=subprocess.STDOUT)
+            logger.info(f"[Debug] FFmpeg found: {res.decode().splitlines()[0]}")
+        except Exception as e:
+            logger.error(f"[Debug] FFmpeg check failed: {e}")
+            # 尝试检查常见路径
+            common_paths = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffprobe"]
+            for p in common_paths:
+                if os.path.exists(p):
+                    logger.info(f"[Debug] Found file at {p}")
+                else:
+                    logger.info(f"[Debug] {p} not found")
+
         # 定义绑定到特定 user_id 的进度回调
         def progress_callback(msg):
             send_message(user_id, msg)
