@@ -325,8 +325,8 @@ class FeishuSyncer:
             resp = self.client.drive.v1.permission_member.create(req)
             if not resp.success():
                 # 如果已经是协作者，API 会报错，这种情况忽略
-                if "already exists" in resp.msg.lower() or resp.code == 106212:
-                    print(f"[Feishu] 该成员已拥有权限。")
+                if "already exists" in str(resp.msg).lower() or resp.code == 106212 or resp.code == 1063003:
+                    print(f"[Feishu] 该成员已拥有权限或操作已忽略 (Code: {resp.code})。")
                     return True
                 print(f"[Error] 添加权限失败: {resp.msg} (Code: {resp.code})")
                 return False

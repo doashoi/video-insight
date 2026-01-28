@@ -155,6 +155,12 @@ class VideoAnalyzer:
                 if file_id:
                     return f"dashscope://sdk/file/{file_id}"
         except Exception as e:
+            # 增强错误日志打印
+            if 'resp' in locals():
+                try:
+                    print(f"[Upload Error] 详情: {resp.status_code} - {resp.text}")
+                except:
+                    pass
             print(f"[Upload Error] 上传音频失败: {e}")
         return None
 
