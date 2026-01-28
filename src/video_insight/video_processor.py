@@ -10,7 +10,7 @@ import json
 import requests
 import time
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Union, Any
 
 import cv2
 import numpy as np
@@ -72,22 +72,28 @@ class VideoAnalyzer:
             print("[Error] 未配置 DASHSCOPE_API_KEY，无法进行 ASR 识别")
             return None
 
-        # 1. 语音识别 (使用 DashScope 录音文件识别 API)
+        # 1. 语音识别 (使用 DashScope Base64 直接提交)
         try:
-            file_id = self._upload_file_to_dashscope(str(audio_path))
-            if not file_id:
-                print("[Error] 音频上传失败，无法进行 ASR 识别")
+            import base64
+            print(f"[ASR] 正在读取音频并进行 Base64 编码...")
+            with open(str(audio_path), "rb") as f:
+                audio_base64 = base64.b64encode(f.read()).decode("utf-8")
+            
+            # 提交 ASR 任务
+            asr_response = self._submit_asr_task(audio_base64)
+            if not asr_response:
+                print("[Error] ASR 识别失败")
                 return None
             
-            task_id = self._submit_asr_task(file_id)
-            if not task_id:
-                print("[Error] ASR 任务提交失败")
-                return None
-                
-            print(f"[ASR] 任务已提交, TaskID: {task_id}, 正在等待结果...")
-            
-            # 轮询结果
-            result_data = self._wait_for_asr_result(task_id)
+            # 如果返回的是字符串，说明是 TaskID，需要轮询
+            if isinstance(asr_response, str):
+                print(f"[ASR] 任务已提交, TaskID: {asr_response}, 正在等待结果...")
+                result_data = self._wait_for_asr_result(asr_response)
+            else:
+                # 否则说明是同步返回的结果
+                print(f"[ASR] 收到同步返回结果")
+                result_data = asr_response
+
             if not result_data:
                 return None
                 
@@ -139,83 +145,8 @@ class VideoAnalyzer:
             try: shutil.rmtree(temp_audio_dir)
             except: pass
 
-    def _upload_file_to_dashscope(self, file_path: str) -> Optional[str]:
-        """将文件上传到 DashScope 临时存储。"""
-        import sys
-        url = "https://dashscope.aliyuncs.com/api/v1/files"
-        
-        if not self.api_key:
-            print("[Upload Error] DASHSCOPE_API_KEY 为空，请检查环境变量配置。")
-            sys.stdout.flush()
-            return None
-            
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        try:
-            # Check file size
-            if not os.path.exists(file_path):
-                print(f"[Upload Error] 文件不存在: {file_path}")
-                sys.stdout.flush()
-                return None
-            f_size = os.path.getsize(file_path)
-            print(f"[Upload] 准备上传音频: {Path(file_path).name}, 大小: {f_size/1024/1024:.2f}MB")
-            
-            # DashScope 文件上传限制通常为 150MB
-            if f_size > 150 * 1024 * 1024:
-                print(f"[Upload Warning] 文件大小超过 150MB，可能会导致上传失败。")
-                
-            if f_size == 0:
-                 print(f"[Upload Error] 音频文件大小为 0，无法上传")
-                 sys.stdout.flush()
-                 return None
-
-            with open(file_path, 'rb') as f:
-                files = {'file': f}
-                # ASR 任务建议使用 purpose='audio'
-                data = {'description': 'audio_for_asr', 'purpose': 'audio'}
-                print(f"[Upload] 正在发送请求到 {url}...")
-                sys.stdout.flush()
-                resp = requests.post(url, headers=headers, files=files, data=data, timeout=120)
-                
-                if resp.status_code != 200:
-                    print(f"[Upload Error] 状态码: {resp.status_code}, 响应: {resp.text}")
-                    sys.stdout.flush()
-                    return None
-                    
-                res = resp.json()
-                # 优先解析 nested 格式 (purpose='audio' 时的返回)
-                file_id = None
-                if 'data' in res and 'uploaded_files' in res['data']:
-                    uploaded_files = res['data'].get('uploaded_files', [])
-                    if uploaded_files:
-                        file_id = uploaded_files[0].get('file_id')
-                
-                # 回退到根目录 id (普通上传格式)
-                if not file_id:
-                    file_id = res.get('id')
-
-                if file_id:
-                    print(f"[Upload Success] File ID: {file_id}")
-                    sys.stdout.flush()
-                    # 注意：如果是从 uploaded_files 获取的，返回的是纯 ID，需要后续处理
-                    return file_id
-                else:
-                    print(f"[Upload Error] 响应中缺少有效 id: {res}")
-                    sys.stdout.flush()
-                    return None
-                    sys.stdout.flush()
-                    return None
-        except Exception as e:
-            print(f"[Upload Error] 异常详情: {str(e)}")
-            if 'resp' in locals():
-                try:
-                    print(f"[Upload Error] HTTP 响应内容: {resp.text}")
-                except:
-                    pass
-        sys.stdout.flush()
-        return None
-
-    def _submit_asr_task(self, file_id: str) -> Optional[str]:
-        """提交 ASR 任务。"""
+    def _submit_asr_task(self, audio_base64: str) -> Optional[Union[str, Dict]]:
+        """提交 ASR 任务，支持异步和同步返回。"""
         import sys
         url = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
         headers = {
@@ -223,11 +154,12 @@ class VideoAnalyzer:
             "Content-Type": "application/json",
             "X-DashScope-Async": "enable"
         }
-        # 统一使用 file_ids 方式引用已上传文件
+        # 使用 audio 字段传递 Base64 数据
         payload = {
             "model": "fun-asr-mtl-2025-08-25",
             "input": {
-                "file_ids": [file_id]
+                "audio": audio_base64,
+                "sample_rate": 16000
             },
             "parameters": {
                 "language_hints": ["zh", "en"],
@@ -236,18 +168,27 @@ class VideoAnalyzer:
             }
         }
         try:
-            print(f"[ASR] 正在提交任务，File ID: {file_id}")
+            print(f"[ASR] 正在提交任务 (Base64 方式)...")
             sys.stdout.flush()
-            resp = requests.post(url, headers=headers, json=payload, timeout=20)
+            # 增加超时时间，Base64 传输较慢
+            resp = requests.post(url, headers=headers, json=payload, timeout=60)
             if resp.status_code != 200:
                 print(f"[ASR Error] 提交失败，状态码: {resp.status_code}, 详情: {resp.text}")
                 sys.stdout.flush()
                 return None
-            task_id = resp.json().get("output", {}).get("task_id")
+            
+            res = resp.json()
+            task_id = res.get("output", {}).get("task_id")
             if task_id:
-                print(f"[ASR Success] 任务提交成功，Task ID: {task_id}")
+                return task_id
+            
+            # 如果没有 task_id 但有 output，可能是同步返回
+            if "output" in res:
+                return res
+                
+            print(f"[ASR Error] 响应格式未知: {res}")
             sys.stdout.flush()
-            return task_id
+            return None
         except Exception as e:
             print(f"[ASR Error] 提交任务失败: {e}")
             sys.stdout.flush()
