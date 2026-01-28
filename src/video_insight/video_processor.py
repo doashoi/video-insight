@@ -96,15 +96,24 @@ class VideoAnalyzer:
             results = []
             output = result_data.get("output", {})
             
-            # Paraformer-realtime-v2 响应结构解析
-            # 结构通常是: output: { sentences: [...] }
+            # qwen-asr-flash 响应结构解析
+            # 结构通常是: output: { sentences: [...] } 或 output: { text: "..." }
             sentences = output.get("sentences", [])
             
             if not sentences:
-                # 尝试解析 output.results[0].sentences (部分旧模型结构)
+                # 尝试解析 output.results[0].sentences (部分模型结构)
                 res_list = output.get("results", [])
                 if res_list:
                     sentences = res_list[0].get("sentences", [])
+            
+            # 如果依然没有 sentences 但有 text，创建一个虚拟句子以便流程继续
+            if not sentences and output.get("text"):
+                print("[ASR Warning] 未获得时间戳信息，使用完整文本作为单一句子")
+                sentences = [{
+                    "begin_time": 0,
+                    "end_time": 0, # 这里可能需要视频时长，但目前先设为0
+                    "text": output.get("text")
+                }]
             
             for s in sentences:
                 # 记录句子级的时间戳
@@ -138,37 +147,47 @@ class VideoAnalyzer:
             traceback.print_exc()
             return None
         finally:
-            # 清理临时音频文件
-            try: shutil.rmtree(temp_audio_dir)
-            except: pass
+            # 3. 完善资源清理逻辑
+            if temp_audio_dir.exists():
+                try:
+                    shutil.rmtree(temp_audio_dir)
+                    print(f"[Cleanup] 已删除临时音频目录: {temp_audio_dir}")
+                except Exception as e:
+                    print(f"[Cleanup Warning] 无法删除临时目录 {temp_audio_dir}: {e}")
+            sys.stdout.flush()
 
     def _submit_asr_task(self, audio_base64: str) -> Optional[Dict]:
-        """提交 ASR 任务（同步接口）。"""
+        """提交 ASR 任务（同步接口，支持 qwen-asr-flash）。"""
         import sys
-        # 切换到同步识别接口 (Sentence Recognition)
-        url = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/sentence-recognition"
+        # 切换到官方推荐的同步识别接口
+        url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/asr/sentence-recognition"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
-            # 移除 X-DashScope-Async 头
+            # 移除 X-DashScope-Async 头，因为这是同步调用
         }
-        # 使用 audio 字段传递 Base64 数据
+        
+        # 构造符合官方规范的 Payload
         payload = {
-            "model": "paraformer-v2", # 切换到支持同步/Base64 的模型
+            "model": "qwen-asr-flash", 
             "input": {
-                "audio": audio_base64
+                # 关键：添加 data:;base64, 前缀
+                "audio": f"data:;base64,{audio_base64}"
             },
             "parameters": {
-                "language_hints": ["zh", "en"]
+                "language_hints": ["zh", "en"],
+                "timestamp_alignment_enabled": True # 尝试请求时间戳以适配锚点生成
             }
         }
+        
         try:
-            print(f"[ASR] 正在提交任务 (同步 Base64 方式)...")
+            print(f"[ASR] 正在提交同步任务 (模型: qwen-asr-flash)...")
             sys.stdout.flush()
-            # 增加超时时间
+            # 增加超时时间以应对 Base64 传输
             resp = requests.post(url, headers=headers, json=payload, timeout=60)
+            
             if resp.status_code != 200:
-                print(f"[ASR Error] 提交失败，状态码: {resp.status_code}, 详情: {resp.text}")
+                print(f"[ASR Error] 接口调用失败，状态码: {resp.status_code}, 详情: {resp.text}")
                 sys.stdout.flush()
                 return None
             
