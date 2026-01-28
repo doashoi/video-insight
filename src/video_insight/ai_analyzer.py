@@ -171,7 +171,7 @@ class AdsAnalyzer:
         ]
 
         payload = {
-            "model": "qwen-vl-plus",
+            "model": "qwen-vl-plus-2025-08-15",
             "input": {
                 "messages": [
                     {"role": "system", "content": [{"text": self._get_system_prompt()}]},
