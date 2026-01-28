@@ -2,6 +2,8 @@ import json
 import logging
 import threading
 import re
+import os
+import sys
 import lark_oapi
 from lark_oapi.api.im.v1.model import P2ImMessageReceiveV1, CreateMessageRequest, CreateMessageRequestBody
 from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTrigger
@@ -177,21 +179,21 @@ def handle_message(data: P2ImMessageReceiveV1):
         # 只处理文本消息
         if data.event.message.message_type != "text":
             logger.info(f"Ignoring non-text message: {data.event.message.message_type}")
-            return
+            return {}
 
         # 获取用户信息，增加安全性检查
         if not data.event.sender or not data.event.sender.sender_id:
             logger.warning("Message event has no sender info.")
-            return
+            return {}
             
         user_id = data.event.sender.sender_id.open_id
         if not user_id:
             logger.warning("Could not extract open_id from sender info.")
-            return
+            return {}
 
         content_str = data.event.message.content
         if not content_str:
-            return
+            return {}
             
         content = json.loads(content_str)
         text = content.get("text", "").strip()
@@ -203,25 +205,27 @@ def handle_message(data: P2ImMessageReceiveV1):
         # 允许简单的 "ping" 用于测试连通性
         if text.lower() == "ping":
             send_message(user_id, "pong")
-            return
+            return {}
 
         keywords = ["分析", "start", "menu", "开始", "菜单"]
         if any(keyword in text.lower() for keyword in keywords):
             send_config_card(user_id)
-            return
+            return {}
 
         # 2. 如果任务正在运行，且用户发送的不是指令，则保持沉默
         if TASK_LOCK.locked():
             logger.info(f"Task is running, ignoring message from {user_id}")
-            return
+            return {}
 
         # 3. 只有当用户发送的是明显的文字输入时，才回复提示
         if text and len(text) > 0 and not text.startswith("{"):
             send_message(user_id, "输入 '分析' 或 'Start' 开启配置面板。")
             
+        return {}
+            
     except Exception as e:
         logger.error(f"Error in handle_message: {e}", exc_info=True)
-        # 这里不要再 raise，否则 Webhook 会返回 500
+        return {}
 
 def handle_card_action(data: P2CardActionTrigger):
     """处理卡片按钮点击。"""
@@ -240,16 +244,21 @@ def handle_card_action(data: P2CardActionTrigger):
             # 验证
             if not source_url:
                 send_message(user_id, "⚠️ 请输入源多维表格链接！")
-                return
+                return {"toast": {"type": "error", "content": "请输入源表格链接"}}
 
             # 尝试在开始前获取锁
             if not TASK_LOCK.acquire(blocking=False):
                 send_message(user_id, "⚠️ 系统忙碌中，请稍后再试（当前有任务正在运行）。")
-                return
+                return {"toast": {"type": "warn", "content": "系统忙碌中"}}
 
             send_message(user_id, f"✅ 任务已接收！正在解析表格并准备分析环境，请稍后...")
             logger.info(f"Starting background thread for user {user_id}...")
-            sys.stdout.flush()
+            
+            # 显式刷新输出，确保日志可见
+            try:
+                sys.stdout.flush()
+            except NameError:
+                logger.error("NameError: sys is not defined during flush")
             
             # 在后台线程运行任务
             try:
@@ -272,7 +281,6 @@ def handle_card_action(data: P2CardActionTrigger):
                         execute_task(user_id, source_url, template_url)
                     else:
                         # 2. 构造 Client
-                        # FC 运行时会自动注入这些环境变量
                         access_key_id = os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_ID')
                         access_key_secret = os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_SECRET')
                         security_token = os.environ.get('ALIBABA_CLOUD_SECURITY_TOKEN')
@@ -295,10 +303,7 @@ def handle_card_action(data: P2CardActionTrigger):
                         })
                         
                         # 4. 执行异步调用
-                        # 注意：如果 service_name 为空 (FC 3.0)，尝试使用 fallback 或空字符串
-                        # 这里的 service_name 取决于部署时的配置
                         target_service = service_name if service_name else "SenseVoiceService"
-                        
                         logger.info(f"Invoking function: {target_service}/{func_name} (Async)")
                         
                         try:
@@ -309,11 +314,8 @@ def handle_card_action(data: P2CardActionTrigger):
                                 headers={'x-fc-invocation-type': 'Async'}
                             )
                             logger.info("Async invocation success. Task offloaded.")
-                            
-                            # 释放锁，因为真正的任务在另一个请求中运行
                             if TASK_LOCK.locked():
                                 TASK_LOCK.release()
-                                
                         except Exception as invoke_err:
                             logger.error(f"Async invocation failed: {invoke_err}. Falling back to sync.")
                             execute_task(user_id, source_url, template_url)
@@ -326,8 +328,13 @@ def handle_card_action(data: P2CardActionTrigger):
             except Exception as e:
                 if TASK_LOCK.locked():
                     TASK_LOCK.release()
-                logger.error(f"Failed to start thread: {e}")
-                send_message(user_id, "💥 启动任务失败。")
+                logger.error(f"Failed to start task: {e}")
+                return {"toast": {"type": "error", "content": "启动任务失败"}}
+
+            return {"toast": {"type": "success", "content": "任务已接收"}}
+            
+        return {} # 默认返回空对象，避免 SDK 报错
             
     except Exception as e:
-        logger.error(f"Error handling card action: {e}")
+        logger.error(f"Error handling card action: {e}", exc_info=True)
+        return {"toast": {"type": "error", "content": f"处理失败: {str(e)}"}}
