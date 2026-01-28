@@ -144,16 +144,28 @@ class VideoAnalyzer:
         url = "https://dashscope.aliyuncs.com/api/v1/files"
         headers = {"Authorization": f"Bearer {self.api_key}"}
         try:
+            # Check file size
+            if not os.path.exists(file_path):
+                print(f"[Upload Error] 文件不存在: {file_path}")
+                return None
+            f_size = os.path.getsize(file_path)
+            print(f"[Upload] 准备上传音频: {Path(file_path).name}, 大小: {f_size/1024/1024:.2f}MB")
+            if f_size == 0:
+                 print(f"[Upload Error] 音频文件大小为 0，无法上传")
+                 return None
+
             with open(file_path, 'rb') as f:
                 files = {'file': f}
                 data = {'description': 'audio_for_asr'}
-                resp = requests.post(url, headers=headers, files=files, data=data, timeout=60)
+                resp = requests.post(url, headers=headers, files=files, data=data, timeout=120) # 增加超时时间
                 resp.raise_for_status()
                 res = resp.json()
                 file_id = res.get('id')
                 # ASR 任务需要使用 dashscope://sdk/file/file_id 格式
                 if file_id:
                     return f"dashscope://sdk/file/{file_id}"
+                else:
+                    print(f"[Upload Error] 响应中缺少 id: {res}")
         except Exception as e:
             # 增强错误日志打印
             if 'resp' in locals():

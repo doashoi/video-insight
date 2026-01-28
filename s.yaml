@@ -18,6 +18,7 @@ Resources:
     Properties:
       Runtime: custom-container
       MemorySize: 3072
+      EphemeralStorage: 4096
       InstanceType: e1
       Timeout: 60
       InitializationTimeout: 300
