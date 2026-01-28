@@ -22,14 +22,18 @@ _app_secret = config.FEISHU_APP_SECRET.strip() if config.FEISHU_APP_SECRET else 
 _app_id = _app_id.replace('"', '').replace("'", "")
 _app_secret = _app_secret.replace('"', '').replace("'", "")
 
-logger.info(f"Initializing Feishu Client with App ID: {_app_id[:5]}*** (Length: {len(_app_id)})")
+# 基本格式校验
+if _app_id and not _app_id.startswith("cli_"):
+    logger.warning(f"Warning: FEISHU_APP_ID does not start with 'cli_'. Current value starts with: {_app_id[:4]}")
+
+logger.info(f"Initializing Feishu Client (Verified) with App ID: {_app_id[:5]}*** (Length: {len(_app_id)})")
 logger.info(f"App Secret (Masked): {_app_secret[:2]}***{_app_secret[-2:] if len(_app_secret)>2 else ''} (Length: {len(_app_secret)})")
 
 _client = lark_oapi.Client.builder() \
     .app_id(_app_id) \
     .app_secret(_app_secret) \
     .domain("https://open.feishu.cn") \
-    .log_level(lark_oapi.LogLevel.INFO) \
+    .log_level(lark_oapi.LogLevel.DEBUG) \
     .build()
 
 def send_message(user_id: str, content: str, msg_type: str = "text"):

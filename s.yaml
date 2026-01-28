@@ -23,17 +23,16 @@ Resources:
       InitializationTimeout: 300
       InstanceConcurrency: 5
       EnvironmentVariables:
-        OSS_BUCKET: 'video-insight-models'
-        OSS_ENDPOINT: 'vpc100-oss-cn-hangzhou.aliyuncs.com'  # VPC内网Endpoint
-        MODEL_PATH: '/tmp/models'
-        MODEL_SIZE_MB: '600'
-        # 保留原有的业务环境变量
+        # 移除本地模型相关配置
+        # FEISHU 相关配置
         FEISHU_APP_ID: ${env(FEISHU_APP_ID)}
         FEISHU_APP_SECRET: ${env(FEISHU_APP_SECRET)}
         FEISHU_VERIFICATION_TOKEN: ${env(FEISHU_VERIFICATION_TOKEN)}
         FEISHU_ENCRYPT_KEY: ${env(FEISHU_ENCRYPT_KEY)}
         FEISHU_FOLDER_TOKEN: ${env(FEISHU_FOLDER_TOKEN)}
+        # 阿里云 DashScope 配置
         DASHSCOPE_API_KEY: ${env(DASHSCOPE_API_KEY)}
+        # 业务配置
         SOURCE_APP_TOKEN: ${env(SOURCE_APP_TOKEN)}
         SOURCE_TABLE_ID: ${env(SOURCE_TABLE_ID)}
         WIKI_TOKEN: ${env(WIKI_TOKEN)}

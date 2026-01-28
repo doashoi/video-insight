@@ -24,9 +24,18 @@ app = FastAPI()
 
 # 启动时打印配置状态（安全脱敏）
 logger.info("=== Bot Configuration Status ===")
-logger.info(f"FEISHU_APP_ID: {config.FEISHU_APP_ID[:4]}***" if config.FEISHU_APP_ID else "FEISHU_APP_ID: Missing")
-logger.info(f"FEISHU_VERIFICATION_TOKEN: {'Set' if config.FEISHU_VERIFICATION_TOKEN else 'Missing'}")
-logger.info(f"FEISHU_ENCRYPT_KEY: {'Set' if config.FEISHU_ENCRYPT_KEY else 'Missing'}")
+if config.FEISHU_APP_ID:
+    logger.info(f"FEISHU_APP_ID: {config.FEISHU_APP_ID[:4]}*** (Length: {len(config.FEISHU_APP_ID)})")
+else:
+    logger.info("FEISHU_APP_ID: Missing")
+
+if config.FEISHU_APP_SECRET:
+    logger.info(f"FEISHU_APP_SECRET: Set (Length: {len(config.FEISHU_APP_SECRET)})")
+else:
+    logger.info("FEISHU_APP_SECRET: Missing")
+
+logger.info(f"FEISHU_VERIFICATION_TOKEN: {'Set (Length: ' + str(len(config.FEISHU_VERIFICATION_TOKEN)) + ')' if config.FEISHU_VERIFICATION_TOKEN else 'Missing'}")
+logger.info(f"FEISHU_ENCRYPT_KEY: {'Set (Length: ' + str(len(config.FEISHU_ENCRYPT_KEY)) + ')' if config.FEISHU_ENCRYPT_KEY else 'Missing'}")
 logger.info(f"IS_FC: {config.IS_FC}")
 logger.info(f"FFMPEG_PATH: {config.FFMPEG_PATH}")
 logger.info("================================")
