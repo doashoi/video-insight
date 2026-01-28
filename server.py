@@ -288,6 +288,48 @@ async def webhook_event(request: Request):
         "data": lark_resp.data
     }
 
+import index
+
+# --- FC Initializer Adapter ---
+@app.post("/initialize")
+async def initialize(request: Request):
+    """
+    FC Custom Container Initializer Adapter
+    Receives HTTP POST from FC runtime, adapts headers to Context, and calls index.initialize
+    """
+    try:
+        logger.info("Received initialization request")
+        
+        # 构造模拟的 FC Context 对象
+        class Credentials:
+            def __init__(self, access_key_id, access_key_secret, security_token):
+                self.access_key_id = access_key_id
+                self.access_key_secret = access_key_secret
+                self.security_token = security_token
+
+        class Context:
+            def __init__(self, headers):
+                self.credentials = Credentials(
+                    headers.get("x-fc-access-key-id", ""),
+                    headers.get("x-fc-access-key-secret", ""),
+                    headers.get("x-fc-security-token", "")
+                )
+                self.request_id = headers.get("x-fc-request-id", "")
+                self.function_name = headers.get("x-fc-function-name", "")
+
+        # 从请求头获取凭证 (FC 传递凭证的方式)
+        ctx = Context(request.headers)
+        
+        # 调用核心初始化逻辑
+        index.initialize(ctx)
+        
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"Initialization adapter failed: {e}")
+        # 返回 500 以告知 FC 初始化失败
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=500, content={"status": "failed", "error": str(e)})
+
 if __name__ == "__main__":
     import uvicorn
     # FC 自定义容器通常监听 9000 端口，或者我们配置它。
