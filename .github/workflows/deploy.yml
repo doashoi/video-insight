@@ -40,6 +40,8 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .  # 使用当前目录作为构建上下文
+          provenance: false # 禁用 provenance 生成，避免镜像过大或拉取失败
+          sbom: false       # 禁用 sbom 生成，避免镜像过大或拉取失败
           push: true  # 构建完成后自动推送
           platforms: linux/amd64  # 关键修复：强制构建 linux/amd64 镜像，解决 FC 3.0 "platform unknown" 报错
           # 关键修复：使用专属域名 + 命名空间 + 镜像名

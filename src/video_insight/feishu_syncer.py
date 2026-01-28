@@ -47,8 +47,8 @@ class FeishuSyncer:
                 .build()
             
             resp = self.client.bitable.v1.app.create(req)
-            if not resp.success():
-                print(f"[Error] 创建多维表格失败: {resp.msg}")
+            if not resp.success() or not resp.data or not resp.data.app:
+                print(f"[Error] 创建多维表格失败: {resp.msg} (code: {resp.code})")
                 return None
             
             # 响应数据结构: resp.data.app.app_token
@@ -145,7 +145,7 @@ class FeishuSyncer:
         try:
             req = ListAppTableRequest.builder().app_token(app_token).build()
             resp = self.client.bitable.v1.app_table.list(req)
-            if resp.success() and resp.data.items:
+            if resp.success() and resp.data and resp.data.items:
                 return resp.data.items[0].table_id
             return None
         except Exception:

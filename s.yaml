@@ -1,26 +1,33 @@
-edition: 3.0.0
-name: video-insight
-access: default
-
-resources:
-  video-insight:
-    component: fc3
-    props:
-      region: cn-hangzhou
-      functionName: bot-processor
-      description: "Video Insight Bot (FC 3.0)"
-      runtime: custom-container
-      timeout: 900
-      memorySize: 4096
-      cpu: 2.0
-      diskSize: 512
-      instanceConcurrency: 1
-      internetAccess: true
-      customContainerConfig:
-        image: "registry.cn-hangzhou.aliyuncs.com/YOUR_NAMESPACE/video-insight:latest"
-        port: 9000
-        accelerationType: 'None'
-      environmentVariables:
+ROSTemplateFormatVersion: '2015-09-01'
+Transform: 'Aliyun::Serverless-2018-04-03'
+Resources:
+  SenseVoiceService:
+    Type: Aliyun::Serverless::Service
+    Properties:
+      Role: 'acs:ram::YOUR_ACCOUNT_ID:role/AliyunFCRole'
+      VpcConfig:
+        VpcId: 'vpc-xxx'           # 用户替换
+        VSwitchIds: ['vsw-xxx']    # 用户替换
+        SecurityGroupId: 'sg-xxx'  # 用户替换
+      LogConfig:
+        Project: 'fc-logs'
+        Logstore: 'sensevoice'
+   
+  SenseVoiceFunction:
+    Type: Aliyun::Serverless::Function
+    Properties:
+      Runtime: custom-container
+      MemorySize: 3072
+      InstanceType: e1
+      Timeout: 60
+      InitializationTimeout: 300
+      InstanceConcurrency: 5
+      EnvironmentVariables:
+        OSS_BUCKET: 'video-insight-models'
+        OSS_ENDPOINT: 'vpc100-oss-cn-hangzhou.aliyuncs.com'  # VPC内网Endpoint
+        MODEL_PATH: '/tmp/models'
+        MODEL_SIZE_MB: '600'
+        # 保留原有的业务环境变量
         FEISHU_APP_ID: ${env(FEISHU_APP_ID)}
         FEISHU_APP_SECRET: ${env(FEISHU_APP_SECRET)}
         FEISHU_VERIFICATION_TOKEN: ${env(FEISHU_VERIFICATION_TOKEN)}
@@ -34,12 +41,8 @@ resources:
         ANALYSIS_VIEW_ID: ${env(ANALYSIS_VIEW_ID)}
         DEST_APP_TOKEN: ${env(DEST_APP_TOKEN)}
         DEST_TABLE_ID: ${env(DEST_TABLE_ID)}
-        TEMP_CLEANUP_ENABLED: "true"
-        PYTHONUNBUFFERED: "1"
-      triggers:
-        - triggerName: http-trigger
-          triggerType: http
-          triggerConfig:
-            authType: anonymous
-            methods:
-              - POST
+      CustomContainerConfig:
+        Image: 'registry.cn-hangzhou.aliyuncs.com/video-insight/sensevoice:latest_accelerated'
+        AccelerationType: Default
+      ProvisionedConfig:
+        Target: 1
