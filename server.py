@@ -85,24 +85,30 @@ async def webhook_event(request: Request):
     is_verification = False
     challenge = ""
 
+    # 打印原始请求 JSON，方便排查
+    logger.info(f"Full request JSON: {json.dumps(req_json)}")
+
     # 情况 A: 未加密的 url_verification
     if req_json.get("type") == "url_verification":
         is_verification = True
         challenge = req_json.get("challenge", "")
     
     # 情况 B: 加密的请求 (需要先解密看是不是 url_verification)
-    elif "encrypt" in req_json and config.FEISHU_ENCRYPT_KEY:
-        try:
-            cipher = AESCipher(config.FEISHU_ENCRYPT_KEY)
-            decrypted_string = cipher.decrypt_string(req_json["encrypt"])
-            decrypted_json = json.loads(decrypted_string)
-            
-            if decrypted_json.get("type") == "url_verification":
-                is_verification = True
-                challenge = decrypted_json.get("challenge", "")
-        except Exception as e:
-            logger.error(f"Manual decryption failed: {e}")
-            # 解密失败不立即返回错误，让 SDK 再试一次
+    elif "encrypt" in req_json:
+        if config.FEISHU_ENCRYPT_KEY:
+            try:
+                cipher = AESCipher(config.FEISHU_ENCRYPT_KEY)
+                decrypted_string = cipher.decrypt_string(req_json["encrypt"])
+                decrypted_json = json.loads(decrypted_string)
+                logger.info(f"Decrypted request JSON: {json.dumps(decrypted_json)}")
+                
+                if decrypted_json.get("type") == "url_verification":
+                    is_verification = True
+                    challenge = decrypted_json.get("challenge", "")
+            except Exception as e:
+                logger.error(f"Manual decryption failed: {e}")
+        else:
+            logger.warning("Request is encrypted but FEISHU_ENCRYPT_KEY is not set!")
 
     if is_verification and challenge:
         logger.info(f"Handling url_verification manually. Challenge: {challenge}")
@@ -113,9 +119,13 @@ async def webhook_event(request: Request):
 
     # 3. 如果不是验证请求，或者手动解密失败，交给 SDK 标准流程
     try:
+        # 记录请求头，方便排查签名问题
+        logger.info(f"Request Headers: {dict(request.headers)}")
+        
         # 转换 header 键名为 SDK 期望的格式 (有些版本的 SDK 对大小写敏感)
         headers = {k.lower(): v for k, v in request.headers.items()}
-        # 针对 lark-oapi 的特殊处理：确保 SDK 能够找到必要的签名头 (使用 SDK 期望的大写形式)
+        # 针对 lark-oapi 的特殊处理：确保 SDK 能够找到必要的签名头
+        # 注意：SDK 内部通常会自动处理大小写，但这里我们构造一个标准的 LarkRequest 对象
         standard_headers = {
              "X-Lark-Signature": headers.get("x-lark-signature", ""),
              "X-Lark-Request-Timestamp": headers.get("x-lark-request-timestamp", ""),
@@ -123,19 +133,19 @@ async def webhook_event(request: Request):
              "Content-Type": headers.get("content-type", "application/json")
          }
         
-        lark_req = lark_oapi.parse_req(
-            arg=lark_oapi.Request(
-                uri=str(request.url), 
-                headers=standard_headers, 
-                body=req_body
-            )
-        )
+        # 打印提取到的关键头信息
+        logger.info(f"Extracted headers for SDK: {standard_headers}")
+        
+        lark_req = lark_oapi.Request()
+        lark_req.uri = str(request.url)
+        lark_req.headers = standard_headers
+        lark_req.body = req_body
         
         lark_resp = event_handler.do(lark_req)
         
         # 如果 SDK 返回 500，记录一下 body
         if lark_resp.code == 500:
-            logger.error(f"SDK returned 500. Body: {lark_resp.body}")
+            logger.error(f"SDK returned 500. Body: {lark_resp.body.decode('utf-8') if lark_resp.body else 'Empty'}")
 
         return Response(
             content=lark_resp.body or b"", 
