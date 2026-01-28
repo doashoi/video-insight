@@ -11,10 +11,15 @@ from video_insight.core import run_pipeline_task, TASK_LOCK
 
 logger = logging.getLogger("BotHandlers")
 
+# 初始化全局飞书客户端
+_client = lark_oapi.Client.builder() \
+    .app_id(config.FEISHU_APP_ID) \
+    .app_secret(config.FEISHU_APP_SECRET) \
+    .domain(config.FEISHU_DOMAIN) \
+    .build()
+
 def send_message(user_id: str, content: str, msg_type: str = "text"):
     """向用户发送消息。"""
-    client = lark_oapi.Client.builder().app_id(config.FEISHU_APP_ID).app_secret(config.FEISHU_APP_SECRET).build()
-    
     if msg_type == "text":
         content_json = json.dumps({"text": content})
     else:
@@ -29,9 +34,11 @@ def send_message(user_id: str, content: str, msg_type: str = "text"):
             .build()) \
         .build()
         
-    resp = client.im.v1.message.create(req)
+    resp = _client.im.v1.message.create(req)
     if not resp.success():
         logger.error(f"Failed to send message to {user_id}: {resp.msg} (code: {resp.code})")
+    else:
+        logger.info(f"Successfully sent {msg_type} message to {user_id}")
 
 def extract_folder_token(text: str) -> str:
     """从 URL 或文本中提取文件夹 token。"""
@@ -62,7 +69,7 @@ def send_config_card(user_id: str):
                 {
                     "tag": "div",
                     "text": {
-                        "content": "请填写源数据表格链接和任务名称。结果将自动存入您的飞书文件夹。",
+                        "content": "请填写需要获取信息的飞书表格链接（支持 Base 和 Wiki）。系统将自动创建分析结果表并存储在“自动分析”空间中。",
                         "tag": "plain_text"
                     }
                 },
@@ -79,34 +86,28 @@ def send_config_card(user_id: str):
                             },
                             "placeholder": {
                                 "tag": "plain_text",
-                                "content": "必须是飞书多维表格链接"
+                                "content": "粘贴飞书多维表格或知识库表格链接"
                             },
                             "required": True
                         },
                         {
                             "tag": "input",
-                            "name": "task_name",
+                            "name": "template_table_link",
                             "label": {
                                 "tag": "plain_text",
-                                "content": "新任务名称"
+                                "content": "模板多维表格链接 (可选)"
                             },
                             "placeholder": {
                                 "tag": "plain_text",
-                                "content": "请输入任务名称"
+                                "content": "如果不填写，将直接复制源数据表的结构"
                             },
-                            "required": True,
-                            "default_value": "视频分析任务"
+                            "required": False
                         },
                         {
-                            "tag": "input",
-                            "name": "folder_link",
-                            "label": {
-                                "tag": "plain_text",
-                                "content": "目标文件夹链接 (可选)"
-                            },
-                            "placeholder": {
-                                "tag": "plain_text",
-                                "content": "粘贴飞书文件夹链接，结果表将存放在此"
+                            "tag": "div",
+                            "text": {
+                                "content": "💡 提示：视频将默认下载至运行环境的桌面目录进行分析。",
+                                "tag": "lark_md"
                             }
                         },
                         {
@@ -127,26 +128,18 @@ def send_config_card(user_id: str):
     
     send_message(user_id, json.dumps(card_content), "interactive")
 
-def execute_task(user_id: str, folder_token: str, app_name: str, source_url: str):
+def execute_task(user_id: str, source_url: str, template_url: str = None):
     """执行管道任务。"""
     try:
         # 定义绑定到特定 user_id 的进度回调
         def progress_callback(msg):
             send_message(user_id, msg)
             
-        # 确定目标文件夹
-        target_token = folder_token if folder_token else config.FEISHU_FOLDER_TOKEN
-        
-        if target_token == config.FEISHU_FOLDER_TOKEN:
-             progress_callback(f"📂 结果将保存到系统默认空间")
-        else:
-             progress_callback(f"📂 使用您指定的文件夹")
-
-        success, app_token, name = run_pipeline_task(user_id, target_token, app_name, source_url, progress_callback)
+        success, app_token, name = run_pipeline_task(user_id, source_url, progress_callback, template_url=template_url)
         if success:
-            send_message(user_id, f"🎉 分析完成！\n应用名称: {name}\nApp Token: {app_token}")
+            send_message(user_id, f"🎉 任务全部完成！\n新表格名称: {name}\nApp Token: {app_token}")
         else:
-            send_message(user_id, f"❌ 分析失败: {name if name else '未知错误'}")
+            send_message(user_id, f"❌ 任务失败: {name if name else '未知错误'}")
     except Exception as e:
         logger.error(f"Task runner error: {e}", exc_info=True)
         send_message(user_id, f"💥 运行发生严重错误，请联系管理员。")
@@ -159,17 +152,32 @@ def execute_task(user_id: str, folder_token: str, app_name: str, source_url: str
 def handle_message(data: P2ImMessageReceiveV1):
     """处理传入的文本消息。"""
     try:
+        # 只处理文本消息
+        if data.event.message.message_type != "text":
+            return
+
         content = json.loads(data.event.message.content)
         text = content.get("text", "").strip()
         user_id = data.event.sender.sender_id.open_id
         
+        # 记录收到的消息
         logger.info(f"Received message from {user_id}: {text}")
         
-        # 简单的关键词触发
-        if any(keyword in text.lower() for keyword in ["分析", "start", "menu", "开始", "菜单"]):
+        # 1. 检查关键词
+        keywords = ["分析", "start", "menu", "开始", "菜单"]
+        if any(keyword in text.lower() for keyword in keywords):
             send_config_card(user_id)
-        else:
+            return
+
+        # 2. 如果任务正在运行，且用户发送的不是指令，则保持沉默
+        if TASK_LOCK.locked():
+            logger.info(f"Task is running, ignoring non-command message from {user_id}")
+            return
+
+        # 3. 只有当用户发送的是明显的文字输入（且不是空消息或特殊字符）时，才回复提示
+        if text and len(text) > 0 and not text.startswith("{"):
             send_message(user_id, "输入 '分析' 或 'Start' 开启配置面板。")
+            
     except Exception as e:
         logger.error(f"Error handling message: {e}")
 
@@ -185,11 +193,7 @@ def handle_card_action(data: P2CardActionTrigger):
         if action.name == "submit_btn" or action.name == "video_analysis_task_submit" or "source_table_link" in form_data:
             # 提取输入
             source_url = form_data.get("source_table_link")
-            app_name = form_data.get("task_name")
-            folder_link = form_data.get("folder_link", "")
-            
-            # 提取 Token
-            folder_token = extract_folder_token(folder_link)
+            template_url = form_data.get("template_table_link")
             
             # 验证
             if not source_url:
@@ -201,11 +205,11 @@ def handle_card_action(data: P2CardActionTrigger):
                 send_message(user_id, "⚠️ 系统忙碌中，请稍后再试（当前有任务正在运行）。")
                 return
 
-            send_message(user_id, f"✅ 任务已启动！\n名称: {app_name}\n源: {source_url}\n请耐心等待...")
+            send_message(user_id, f"✅ 任务已接收！正在解析表格并准备分析环境，请稍后...")
             
             # 在后台线程运行任务
             try:
-                t = threading.Thread(target=execute_task, args=(user_id, folder_token, app_name, source_url))
+                t = threading.Thread(target=execute_task, args=(user_id, source_url, template_url))
                 t.start()
             except Exception as e:
                 if TASK_LOCK.locked():

@@ -41,7 +41,7 @@ class FeishuClient:
     def get_app_token_from_wiki(self, wiki_token: str) -> Optional[str]:
         """解析 Wiki Token 为多维表格 App Token。"""
         self._ensure_token()
-        url = f"{config.FEISHU_DOMAIN}/open-apis/wiki/v2/spaces/get_node"
+        url = f"{config.FEISHU_DOMAIN}/open-apis/wiki/v2/space_node/get"
         params = {"token": wiki_token}
         
         try:
@@ -92,9 +92,9 @@ class FeishuClient:
         return all_records
 
 class AdsAnalyzer:
-    def __init__(self):
-        self.output_dir = config.RESULT_DIR
-        self.assets_dir = config.OUTPUT_DIR
+    def __init__(self, output_dir: Path = None, assets_dir: Path = None):
+        self.output_dir = output_dir or config.RESULT_DIR
+        self.assets_dir = assets_dir or config.OUTPUT_DIR
         self.api_key = config.DASHSCOPE_API_KEY
         self.feishu_client = FeishuClient(config.FEISHU_APP_ID, config.FEISHU_APP_SECRET)
         
@@ -232,9 +232,9 @@ class AdsAnalyzer:
         print(f"[Feishu] App Token: {target_app_token}")
         # 如果未提供 table_id，使用配置或获取第一个表
         if not target_table_id:
-             target_table_id = config.ANALYSIS_TABLE_ID
+             target_table_id = config.SOURCE_TABLE_ID
              
-        records = self.feishu_client.get_all_records(target_app_token, target_table_id, config.ANALYSIS_VIEW_ID)
+        records = self.feishu_client.get_all_records(target_app_token, target_table_id)
         
         normalized_data = []
         for r in records:
@@ -287,6 +287,12 @@ class AdsAnalyzer:
         if progress_callback:
             progress_callback(f"🤖 开始 AI 分析，共 {total_rows} 条数据...")
 
+        success_count = 0
+        skip_count = 0
+        
+        # 定义进度通知步长 (例如总数的 20%，或者至少每 10 条一次)
+        report_step = max(1, total_rows // 5) if total_rows > 10 else 1
+
         for index, row in enumerate(data):
             material_name = str(row.get('素材名称', ''))
             if material_name.lower().endswith('.mp4'):
@@ -294,87 +300,69 @@ class AdsAnalyzer:
             material_name = material_name.strip()
 
             if not material_name:
+                skip_count += 1
                 continue
                 
             print(f"\n[{index+1}/{total_rows}] 正在处理: {material_name}")
             
+            # 查找素材
             sheet_path, text_path = self._find_assets(material_name)
-            
-            analysis_result = {}
-            
-            impressions = float(row.get('展现', 0) or 0)
-            clicks = float(row.get('点击', 0) or 0)
-            activations = float(row.get('激活人数', 0) or 0)
-            
-            ctr = clicks / impressions if impressions > 0 else 0
-            cvr = activations / clicks if clicks > 0 else 0
-
-            if sheet_path and text_path:
-                print("  发现本地素材。正在调用 AI...")
-                
-                try:
-                    with open(text_path, 'r', encoding='utf-8') as f:
-                        transcript = f.read()
-                    
-                    perf_data = {
-                        "展现": int(impressions),
-                        "点击": int(clicks),
-                        "消耗": row.get('消耗', 0),
-                        "激活人数": int(activations),
-                        "点击率": f"{ctr:.2%}",
-                        "转换率": f"{cvr:.2%}"
-                    }
-                    
-                    ai_res = self._call_qwen_vl(sheet_path, transcript, perf_data)
-                    if ai_res:
-                        analysis_result = ai_res
-                        print("  AI 分析完成。")
-                    else:
-                        print("  AI 分析失败。")
-                        if progress_callback:
-                            progress_callback(f"❌ {material_name}: AI 分析失败 (返回空)")
-                except Exception as e:
-                    print(f"  AI 分析过程中出错: {e}")
-                    if progress_callback:
-                        progress_callback(f"💥 {material_name}: AI 分析出错: {e}")
-            else:
-                print("  输出目录中未找到素材。")
+            if not sheet_path or not text_path:
+                print(f"⚠️ {material_name}: 未找到本地素材 (跳过分析)")
+                skip_count += 1
+                # 即使是静默模式，跳过的信息也建议显示，方便排查
                 if progress_callback:
                     progress_callback(f"⚠️ {material_name}: 未找到本地素材 (跳过分析)")
-                analysis_result = {
-                    "人群": "未找到素材",
-                    "功能": "未找到素材",
-                    "场景": "未找到素材",
-                    "痛点": "未找到素材",
-                    "概述": "未找到素材",
-                    "分析": "未找到素材"
-                }
+                continue
 
-            row_data = {
-                '素材名称': material_name,
-                '视频链接': row.get('视频链接', ''),
-                '缩略图': sheet_path if sheet_path else '', 
-                '人群': analysis_result.get('人群', ''),
-                '功能': analysis_result.get('功能', ''),
-                '场景': analysis_result.get('场景', ''),
-                '痛点': analysis_result.get('痛点', ''),
-                '概述': analysis_result.get('概述', ''),
-                '分析': analysis_result.get('分析', ''),
-                '展现': int(impressions),
-                '点击': int(clicks),
-                '消耗': row.get('消耗', ''),
-                '激活人数': int(activations),
-                '点击率': ctr, 
-                '转换率': cvr, 
-                '来源': row.get('来源', '')
+            # 读取文案
+            try:
+                with open(text_path, "r", encoding="utf-8") as f:
+                    text_content = f.read()
+            except Exception as e:
+                print(f"❌ 读取文案失败: {e}")
+                skip_count += 1
+                continue
+
+            # 提取投放数据
+            perf_data = {
+                "展现": row.get("展现", 0),
+                "点击": row.get("点击", 0),
+                "消耗": row.get("消耗", 0),
+                "激活人数": row.get("激活人数", 0),
+                "来源": row.get("来源", "")
             }
-            results.append(row_data)
-            
-            time.sleep(1)
 
-        print(f"分析完成。生成了 {len(results)} 条结果。")
+            # 调用 AI
+            analysis_json = self._call_qwen_vl(sheet_path, text_content, perf_data)
+            if analysis_json:
+                # 合并结果
+                res_item = {**row, **analysis_json}
+                
+                # 显式添加缩略图路径，以便 Syncer 可以上传
+                if sheet_path and os.path.exists(sheet_path):
+                    res_item["缩略图"] = sheet_path
+                
+                results.append(res_item)
+                success_count += 1
+                
+                # 进度通知逻辑：
+                # 1. 如果数据量小 (<10)，逐条通知
+                # 2. 如果数据量大，按步长通知
+                if progress_callback:
+                    if total_rows <= 10:
+                        # 逐条通知不需要显示具体 JSON，只显示成功状态
+                        pass 
+                    elif (success_count % report_step == 0) or (index + 1 == total_rows):
+                        progress_callback(f"📊 AI 分析进度: {index+1}/{total_rows} (已完成 {success_count} 条)")
+            else:
+                skip_count += 1
+                if progress_callback:
+                    progress_callback(f"❌ {material_name}: AI 分析失败")
+
         if progress_callback:
             progress_callback(f"✅ AI 分析全部完成，生成 {len(results)} 条结果。")
+            
         return results
 
     # 保留旧方法以兼容 CLI (如果需要)，但在新管线中未使用

@@ -11,9 +11,19 @@ class Config:
     # 项目根目录
     ROOT_DIR = Path(__file__).parent.parent.parent
     
-    # 临时处理目录
-    OUTPUT_DIR = ROOT_DIR / "Data_Analysis_Video_Download"
-    RESULT_DIR = ROOT_DIR / "result"
+    # 默认下载路径：如果是 Windows 且是本地测试环境，默认下载到桌面
+    if os.name == 'nt':
+        DESKTOP_PATH = Path(os.path.join(os.environ.get("USERPROFILE", ""), "Desktop"))
+        if DESKTOP_PATH.exists():
+            OUTPUT_DIR = DESKTOP_PATH / "Data_Analysis_Video_Download"
+            RESULT_DIR = DESKTOP_PATH / "Data_Analysis_Result"
+        else:
+            OUTPUT_DIR = ROOT_DIR / "Data_Analysis_Video_Download"
+            RESULT_DIR = ROOT_DIR / "result"
+    else:
+        # 非 Windows 环境 (如 Linux/Docker)
+        OUTPUT_DIR = ROOT_DIR / "Data_Analysis_Video_Download"
+        RESULT_DIR = ROOT_DIR / "result"
     
     # 如果目录不存在则创建
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

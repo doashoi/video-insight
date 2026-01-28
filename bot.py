@@ -19,7 +19,7 @@ def main():
     logger.info("Starting Feishu WebSocket Client (Local Mode)...")
     
     # 构建事件分发器
-    event_handler = EventDispatcherHandler.builder("", "") \
+    event_handler = EventDispatcherHandler.builder(config.FEISHU_VERIFICATION_TOKEN, config.FEISHU_ENCRYPT_KEY) \
         .register_p2_im_message_receive_v1(handle_message) \
         .register_p2_card_action_trigger(handle_card_action) \
         .build()
@@ -29,7 +29,7 @@ def main():
         config.FEISHU_APP_ID, 
         config.FEISHU_APP_SECRET,
         event_handler=event_handler,
-        log_level=lark_oapi.LogLevel.INFO
+        log_level=lark_oapi.LogLevel.DEBUG
     )
 
     # 启动客户端

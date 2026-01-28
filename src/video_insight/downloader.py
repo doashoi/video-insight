@@ -165,7 +165,7 @@ class VideoDownloader:
         if progress_callback:
             progress_callback(f"✅ 视频下载完成，成功 {success_count + skip_count} 条 (新增 {success_count}, 跳过 {skip_count})，失败 {fail_count} 条。")
 
-def run_downloader(source_app_token: str = None, source_table_id: str = None, progress_callback=None):
+def run_downloader(source_app_token: str = None, source_table_id: str = None, progress_callback=None, output_dir: Path = None):
     try:
         app_token = source_app_token or config.SOURCE_APP_TOKEN
         table_id = source_table_id or config.SOURCE_TABLE_ID
@@ -179,7 +179,8 @@ def run_downloader(source_app_token: str = None, source_table_id: str = None, pr
         client = FeishuClient(config.FEISHU_APP_ID, config.FEISHU_APP_SECRET)
         records = client.get_all_records(app_token, table_id)
         
-        downloader = VideoDownloader(config.OUTPUT_DIR, config.MAX_WORKERS)
+        target_dir = output_dir or config.OUTPUT_DIR
+        downloader = VideoDownloader(target_dir, config.MAX_WORKERS)
         downloader.start(records, progress_callback)
         
     except Exception as e:
