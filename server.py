@@ -80,42 +80,23 @@ async def webhook_event(request: Request):
     # 打印简短的请求日志，方便排查
     logger.info(f"Received webhook request: {req_body[:100]}...")
 
-    # 2. 优先处理 url_verification (手动处理以确保 100% 成功)
-    # 飞书配置保存时发送的请求
-    is_verification = False
-    challenge = ""
-
-    # 打印原始请求 JSON，方便排查
-    logger.info(f"Full request JSON: {json.dumps(req_json)}")
-
-    # 情况 A: 未加密的 url_verification
-    if req_json.get("type") == "url_verification":
-        is_verification = True
-        challenge = req_json.get("challenge", "")
-    
-    # 情况 B: 加密的请求 (需要先解密看是不是 url_verification)
-    elif "encrypt" in req_json:
-        if config.FEISHU_ENCRYPT_KEY:
-            try:
-                cipher = AESCipher(config.FEISHU_ENCRYPT_KEY)
-                decrypted_string = cipher.decrypt_string(req_json["encrypt"])
-                decrypted_json = json.loads(decrypted_string)
-                logger.info(f"Decrypted request JSON: {json.dumps(decrypted_json)}")
-                
-                if decrypted_json.get("type") == "url_verification":
-                    is_verification = True
-                    challenge = decrypted_json.get("challenge", "")
-            except Exception as e:
-                logger.error(f"Manual decryption failed: {e}")
-        else:
-            logger.warning("Request is encrypted but FEISHU_ENCRYPT_KEY is not set!")
-
-    if is_verification and challenge:
-        logger.info(f"Handling url_verification manually. Challenge: {challenge}")
-        return Response(
-            content=json.dumps({"challenge": challenge}), 
-            media_type="application/json"
-        )
+    # 2. 优先处理 url_verification (飞书事件配置校验)
+    # 注意：校验请求可能包含加密内容，也可能不包含
+    try:
+        body_json = req_json
+        # 处理加密格式的校验
+        if "encrypt" in body_json and encrypt_key:
+            cipher = AESCipher(encrypt_key)
+            decrypted_body = cipher.decrypt_string(body_json["encrypt"])
+            body_json = json.loads(decrypted_body)
+            
+        if body_json.get("type") == "url_verification":
+            challenge = body_json.get("challenge")
+            if challenge:
+                logger.info("Handling URL Verification (Challenge)")
+                return {"challenge": challenge}
+    except Exception as e:
+        logger.debug(f"Pre-check for challenge failed (this is usually fine): {e}")
 
     # 3. 如果不是验证请求，或者手动解密失败，交给 SDK 标准流程
     try:
@@ -125,27 +106,47 @@ async def webhook_event(request: Request):
         # 转换 header 键名为 SDK 期望的格式 (有些版本的 SDK 对大小写敏感)
         headers = {k.lower(): v for k, v in request.headers.items()}
         # 针对 lark-oapi 的特殊处理：确保 SDK 能够找到必要的签名头
-        # 注意：SDK 内部通常会自动处理大小写，但这里我们构造一个标准的 LarkRequest 对象
-        standard_headers = {
-             "X-Lark-Signature": headers.get("x-lark-signature", ""),
-             "X-Lark-Request-Timestamp": headers.get("x-lark-request-timestamp", ""),
-             "X-Lark-Request-Nonce": headers.get("x-lark-request-nonce", ""),
-             "Content-Type": headers.get("content-type", "application/json")
-         }
+        # 注意：SDK 内部通常会自动处理大小写，但这里我们构造一个标准的 RawRequest 对象
+        # 我们直接使用原始 headers，但确保它们是 dict 类型
+        standard_headers = dict(request.headers)
         
-        # 打印提取到的关键头信息
-        logger.info(f"Extracted headers for SDK: {standard_headers}")
-        
-        lark_req = lark_oapi.Request()
+        # 打印关键头信息，方便排查
+        logger.info(f"SDK Headers (Keys): {list(standard_headers.keys())}")
+
+        try:
+            from lark_oapi.model import RawRequest
+            lark_req = RawRequest()
+        except ImportError:
+            # 兼容旧版本或不同导入路径
+            lark_req = lark_oapi.RawRequest()
+            
         lark_req.uri = str(request.url)
         lark_req.headers = standard_headers
         lark_req.body = req_body
         
-        lark_resp = event_handler.do(lark_req)
+        try:
+            lark_resp = event_handler.do(lark_req)
+        except Exception as sdk_ex:
+            logger.error(f"Exception during SDK execution: {sdk_ex}", exc_info=True)
+            return Response(
+                content=json.dumps({"status": "failed", "error": "SDK execution error", "detail": str(sdk_ex)}),
+                status_code=500,
+                media_type="application/json"
+            )
+        
+        # 记录 SDK 的响应状态
+        logger.info(f"SDK Response Code: {lark_resp.code}")
         
         # 如果 SDK 返回 500，记录一下 body
         if lark_resp.code == 500:
-            logger.error(f"SDK returned 500. Body: {lark_resp.body.decode('utf-8') if lark_resp.body else 'Empty'}")
+            err_msg = lark_resp.body.decode('utf-8') if lark_resp.body else 'Empty'
+            logger.error(f"SDK returned 500. Body: {err_msg}")
+            # 返回 200 给飞书，避免飞书不断重试，但内容包含错误信息
+            return Response(
+                content=json.dumps({"status": "failed", "sdk_error": err_msg}),
+                status_code=200, # 改为 200，停止飞书重试
+                media_type="application/json"
+            )
 
         return Response(
             content=lark_resp.body or b"", 
