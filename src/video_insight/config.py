@@ -3,8 +3,9 @@ import logging
 from pathlib import Path
 from dotenv import load_dotenv
 
-# 加载环境变量
-load_dotenv()
+# 加载环境变量 (仅在非 FC 环境下加载 .env)
+if not (os.environ.get("FC_FUNCTION_NAME") or os.environ.get("FC_SERVICE_NAME")):
+    load_dotenv()
 
 class Config:
     """项目配置类"""
