@@ -5,6 +5,7 @@ import shutil
 import logging
 import re
 import time
+import sys
 from datetime import datetime
 from typing import Optional, Tuple
 from pathlib import Path
@@ -122,6 +123,7 @@ def run_pipeline_task(user_id: str, source_url: str, progress_callback=None, tem
     """
     def report_progress(msg):
         logger.info(f"[Progress] {msg}")
+        sys.stdout.flush() # 强制刷新日志
         if progress_callback:
             try:
                 progress_callback(msg)

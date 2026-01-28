@@ -1,9 +1,18 @@
 import json
 import logging
-import lark_oapi
-from fastapi import FastAPI, Request, Response
 import sys
 from pathlib import Path
+
+# 配置日志（必须在所有导入之前，确保全局生效）
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stdout  # 显式指定输出到 stdout
+)
+logger = logging.getLogger("FeishuBot-Webhook")
+
+import lark_oapi
+from fastapi import FastAPI, Request, Response
 import hashlib
 import base64
 from Crypto.Cipher import AES
@@ -12,13 +21,10 @@ from Crypto.Cipher import AES
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from video_insight.config import config
+from video_insight import fc_context
 from video_insight.bot import handle_message, handle_card_action
 from video_insight.bot import fc_init
 from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
-
-# 设置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("FeishuBot-Webhook")
 
 app = FastAPI()
 
@@ -28,6 +34,7 @@ if config.FEISHU_APP_ID:
     logger.info(f"FEISHU_APP_ID: {config.FEISHU_APP_ID[:4]}*** (Length: {len(config.FEISHU_APP_ID)})")
 else:
     logger.info("FEISHU_APP_ID: Missing")
+sys.stdout.flush() # 强制刷新
 
 if config.FEISHU_APP_SECRET:
     logger.info(f"FEISHU_APP_SECRET: Set (Length: {len(config.FEISHU_APP_SECRET)})")
@@ -187,6 +194,58 @@ async def webhook_event(request: Request):
             status_code=500,
             media_type="application/json"
         )
+
+# --- 阿里云函数计算 (FC) 异步调用处理 ---
+@app.post("/invoke")
+async def invoke_handler(request: Request):
+    """
+    处理来自 FC 的异步调用请求
+    该接口由 handlers.py 中的 execute_task 通过 FC SDK 触发
+    """
+    try:
+        # 获取事件内容
+        # FC 异步调用会将 payload 作为 body 发送
+        body = await request.body()
+        logger.info(f"Received invoke request (length: {len(body)})")
+        
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            # 如果不是 JSON，可能是 raw bytes 或其他格式，但在我们的场景下应该是 JSON
+            logger.warning(f"Invoke body is not JSON: {body[:100]}")
+            return {"status": "ignored", "reason": "not_json"}
+
+        logger.info(f"Invoke payload: {payload}")
+        
+        action = payload.get("action")
+        if action == "run_task_sync":
+            user_id = payload.get("user_id")
+            source_url = payload.get("source_url")
+            template_url = payload.get("template_url")
+            
+            if not user_id or not source_url:
+                logger.error("Missing required parameters in invoke payload")
+                return {"status": "failed", "reason": "missing_params"}
+
+            logger.info(f"[AsyncWorker] Starting sync execution for user {user_id}")
+            
+            # 动态导入以避免循环依赖
+            from video_insight.bot.handlers import execute_task
+            
+            # 同步执行任务 (因为这是在异步调用的独立实例中运行)
+            execute_task(user_id, source_url, template_url)
+            
+            logger.info(f"[AsyncWorker] Task completed for user {user_id}")
+            return {"status": "success"}
+            
+        return {"status": "ignored", "reason": "unknown_action"}
+            
+    except Exception as e:
+        logger.error(f"Error in invoke_handler: {e}", exc_info=True)
+        # 返回 200 避免 FC 重试? 或者返回 500 让 FC 重试?
+        # 通常如果是代码逻辑错误，重试可能没用。但在 FC 中，返回非 200 会触发重试策略。
+        # 这里我们返回 200 并记录错误，除非我们确定需要重试。
+        return {"status": "error", "message": str(e)}
 
 # --- 阿里云函数计算 (FC) 初始化适配器 ---
 @app.post("/initialize")

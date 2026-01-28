@@ -1,12 +1,1 @@
-fastapi
-uvicorn
-requests
-pandas
-openpyxl
-python-dotenv
-Pillow
-tqdm
-lark-oapi
-opencv-python-headless
-oss2
-pycryptodome
+aliyun-fc2

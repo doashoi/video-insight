@@ -248,11 +248,81 @@ def handle_card_action(data: P2CardActionTrigger):
                 return
 
             send_message(user_id, f"✅ 任务已接收！正在解析表格并准备分析环境，请稍后...")
+            logger.info(f"Starting background thread for user {user_id}...")
+            sys.stdout.flush()
             
             # 在后台线程运行任务
             try:
-                t = threading.Thread(target=execute_task, args=(user_id, source_url, template_url))
-                t.start()
+                if config.IS_FC:
+                    # 在 FC 环境下，使用异步调用 (Async Invocation)
+                    # 避免 HTTP 请求超时或容器冻结
+                    logger.info(f"Preparing async invocation for user {user_id} (FC Mode)...")
+                    
+                    from video_insight import fc_context
+                    import fc2
+
+                    # 1. 获取上下文信息
+                    func_name = fc_context.fc_function_name.get()
+                    service_name = fc_context.fc_service_name.get()
+                    region = fc_context.fc_region.get()
+                    account_id = fc_context.fc_account_id.get()
+                    
+                    if not func_name or not account_id:
+                        logger.warning("Missing FC context (func_name or account_id). Falling back to synchronous execution.")
+                        execute_task(user_id, source_url, template_url)
+                    else:
+                        # 2. 构造 Client
+                        # FC 运行时会自动注入这些环境变量
+                        access_key_id = os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_ID')
+                        access_key_secret = os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_SECRET')
+                        security_token = os.environ.get('ALIBABA_CLOUD_SECURITY_TOKEN')
+                        
+                        endpoint = f"https://{account_id}.{region}.fc.aliyuncs.com"
+                        
+                        client = fc2.Client(
+                            endpoint=endpoint,
+                            accessKeyID=access_key_id,
+                            accessKeySecret=access_key_secret,
+                            securityToken=security_token
+                        )
+                        
+                        # 3. 构造 Payload
+                        payload = json.dumps({
+                            "action": "run_task_sync",
+                            "user_id": user_id,
+                            "source_url": source_url,
+                            "template_url": template_url
+                        })
+                        
+                        # 4. 执行异步调用
+                        # 注意：如果 service_name 为空 (FC 3.0)，尝试使用 fallback 或空字符串
+                        # 这里的 service_name 取决于部署时的配置
+                        target_service = service_name if service_name else "SenseVoiceService"
+                        
+                        logger.info(f"Invoking function: {target_service}/{func_name} (Async)")
+                        
+                        try:
+                            client.invoke_function(
+                                target_service,
+                                func_name,
+                                payload=payload,
+                                headers={'x-fc-invocation-type': 'Async'}
+                            )
+                            logger.info("Async invocation success. Task offloaded.")
+                            
+                            # 释放锁，因为真正的任务在另一个请求中运行
+                            if TASK_LOCK.locked():
+                                TASK_LOCK.release()
+                                
+                        except Exception as invoke_err:
+                            logger.error(f"Async invocation failed: {invoke_err}. Falling back to sync.")
+                            execute_task(user_id, source_url, template_url)
+
+                else:
+                    # 本地模式继续使用后台线程
+                    logger.info(f"Starting background thread for user {user_id} (Local Mode)...")
+                    t = threading.Thread(target=execute_task, args=(user_id, source_url, template_url))
+                    t.start()
             except Exception as e:
                 if TASK_LOCK.locked():
                     TASK_LOCK.release()
