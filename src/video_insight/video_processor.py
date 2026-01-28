@@ -85,29 +85,26 @@ class VideoAnalyzer:
                 print("[Error] ASR 识别失败")
                 return None
             
-            # 如果返回的是字符串，说明是 TaskID，需要轮询
-            if isinstance(asr_response, str):
-                print(f"[ASR] 任务已提交, TaskID: {asr_response}, 正在等待结果...")
-                result_data = self._wait_for_asr_result(asr_response)
-            else:
-                # 否则说明是同步返回的结果
-                print(f"[ASR] 收到同步返回结果")
-                result_data = asr_response
-
+            # 同步返回，直接获取结果
+            result_data = asr_response
+            print(f"[ASR] 收到同步返回结果")
+            
             if not result_data:
                 return None
                 
             # 2. 解析结果
             results = []
             output = result_data.get("output", {})
-            # 兼容不同模型的响应结构 (有些在 output.sentences, 有些在 output.results[0].sentences)
-            sentences = output.get("sentences")
-            if sentences is None:
+            
+            # Paraformer-realtime-v2 响应结构解析
+            # 结构通常是: output: { sentences: [...] }
+            sentences = output.get("sentences", [])
+            
+            if not sentences:
+                # 尝试解析 output.results[0].sentences (部分旧模型结构)
                 res_list = output.get("results", [])
                 if res_list:
                     sentences = res_list[0].get("sentences", [])
-                else:
-                    sentences = []
             
             for s in sentences:
                 # 记录句子级的时间戳
@@ -145,32 +142,33 @@ class VideoAnalyzer:
             try: shutil.rmtree(temp_audio_dir)
             except: pass
 
-    def _submit_asr_task(self, audio_base64: str) -> Optional[Union[str, Dict]]:
-        """提交 ASR 任务，支持异步和同步返回。"""
+    def _submit_asr_task(self, audio_base64: str) -> Optional[Dict]:
+        """提交 ASR 任务（同步接口）。"""
         import sys
-        url = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
+        # 切换到同步识别接口 (Sentence Recognition)
+        url = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/sentence-recognition"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "X-DashScope-Async": "enable"
+            "Content-Type": "application/json"
+            # 移除 X-DashScope-Async 头
         }
         # 使用 audio 字段传递 Base64 数据
         payload = {
-            "model": "fun-asr-mtl-2025-08-25",
+            "model": "fun-asr-mtl-2025-08-25", # 切换到支持同步/Base64 的模型
             "input": {
                 "audio": audio_base64,
                 "sample_rate": 16000
             },
             "parameters": {
                 "language_hints": ["zh", "en"],
-                "timestamp_alignment_enabled": True,
-                "rich_transcription_enabled": True
+                # 同步接口参数略有不同，通常不需要 timestamp_alignment_enabled
+                # 但 paraformer-realtime-v2 可能支持 words 输出
             }
         }
         try:
-            print(f"[ASR] 正在提交任务 (Base64 方式)...")
+            print(f"[ASR] 正在提交任务 (同步 Base64 方式)...")
             sys.stdout.flush()
-            # 增加超时时间，Base64 传输较慢
+            # 增加超时时间
             resp = requests.post(url, headers=headers, json=payload, timeout=60)
             if resp.status_code != 200:
                 print(f"[ASR Error] 提交失败，状态码: {resp.status_code}, 详情: {resp.text}")
@@ -178,11 +176,6 @@ class VideoAnalyzer:
                 return None
             
             res = resp.json()
-            task_id = res.get("output", {}).get("task_id")
-            if task_id:
-                return task_id
-            
-            # 如果没有 task_id 但有 output，可能是同步返回
             if "output" in res:
                 return res
                 
@@ -192,44 +185,6 @@ class VideoAnalyzer:
         except Exception as e:
             print(f"[ASR Error] 提交任务失败: {e}")
             sys.stdout.flush()
-        return None
-
-    def _wait_for_asr_result(self, task_id: str) -> Optional[Dict]:
-        """轮询 ASR 任务结果。"""
-        import sys
-        url = f"https://dashscope.aliyuncs.com/api/v1/tasks/{task_id}"
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        
-        print(f"[ASR] 开始轮询任务结果 (Task ID: {task_id})...")
-        max_retries = 60 # 最多等 60 秒
-        for i in range(max_retries):
-            try:
-                resp = requests.get(url, headers=headers, timeout=10)
-                resp.raise_for_status()
-                res = resp.json()
-                status = res.get("output", {}).get("task_status")
-                
-                if i % 10 == 0: # 每 10 秒打印一次状态
-                    print(f"[ASR] 轮询中... 当前状态: {status}")
-                    sys.stdout.flush()
-
-                if status == "SUCCEEDED":
-                    print(f"[ASR Success] 任务完成！")
-                    sys.stdout.flush()
-                    return res
-                elif status in ["FAILED", "CANCELED"]:
-                    print(f"[ASR Error] 任务状态异常: {status}, 详情: {res}")
-                    sys.stdout.flush()
-                    return None
-                
-                time.sleep(1)
-            except Exception as e:
-                print(f"[ASR Error] 轮询结果失败: {e}")
-                sys.stdout.flush()
-                time.sleep(1)
-        
-        print("[ASR Error] 任务超时")
-        sys.stdout.flush()
         return None
 
     def _get_anchors(self, results: List[Dict], video_path: str) -> List[float]:
