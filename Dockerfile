@@ -14,11 +14,6 @@ WORKDIR /app
 COPY requirements.txt .
 
 # 4. Install Python Dependencies
-# Install PyTorch CPU version first to keep image small
-RUN pip install --no-cache-dir torch==2.1.0 torchaudio --index-url https://download.pytorch.org/whl/cpu
-
-# Install other dependencies
-RUN pip install --no-cache-dir opencv-python-headless oss2
 RUN pip install --no-cache-dir -r requirements.txt && \
     pip cache purge && \
     apt-get clean && \

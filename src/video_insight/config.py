@@ -60,10 +60,6 @@ class Config:
     DEST_APP_TOKEN = os.getenv("DEST_APP_TOKEN")
     DEST_TABLE_ID = os.getenv("DEST_TABLE_ID")
 
-    # 模型路径配置
-    MODEL_DIR = ROOT_DIR / "models" / "SenseVoiceSmall"
-    VAD_MODEL_DIR = ROOT_DIR / "models" / "speech_fsmn_vad"
-    
     # FFMPEG 路径配置：跨平台适配
     if os.name == 'nt':
         FFMPEG_PATH = ROOT_DIR / "ffmpeg_tool" / "ffmpeg.exe"

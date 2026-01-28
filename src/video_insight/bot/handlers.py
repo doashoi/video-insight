@@ -152,18 +152,41 @@ def execute_task(user_id: str, source_url: str, template_url: str = None):
 def handle_message(data: P2ImMessageReceiveV1):
     """处理传入的文本消息。"""
     try:
+        # 记录收到的原始事件类型和基本信息
+        msg_id = data.event.message.message_id
+        logger.info(f"Received message event. ID: {msg_id}")
+
         # 只处理文本消息
         if data.event.message.message_type != "text":
+            logger.info(f"Ignoring non-text message: {data.event.message.message_type}")
             return
 
-        content = json.loads(data.event.message.content)
-        text = content.get("text", "").strip()
+        # 获取用户信息，增加安全性检查
+        if not data.event.sender or not data.event.sender.sender_id:
+            logger.warning("Message event has no sender info.")
+            return
+            
         user_id = data.event.sender.sender_id.open_id
+        if not user_id:
+            logger.warning("Could not extract open_id from sender info.")
+            return
+
+        content_str = data.event.message.content
+        if not content_str:
+            return
+            
+        content = json.loads(content_str)
+        text = content.get("text", "").strip()
         
-        # 记录收到的消息
-        logger.info(f"Received message from {user_id}: {text}")
+        # 记录收到的消息内容
+        logger.info(f"Message from {user_id}: {text}")
         
         # 1. 检查关键词
+        # 允许简单的 "ping" 用于测试连通性
+        if text.lower() == "ping":
+            send_message(user_id, "pong")
+            return
+
         keywords = ["分析", "start", "menu", "开始", "菜单"]
         if any(keyword in text.lower() for keyword in keywords):
             send_config_card(user_id)
@@ -171,15 +194,16 @@ def handle_message(data: P2ImMessageReceiveV1):
 
         # 2. 如果任务正在运行，且用户发送的不是指令，则保持沉默
         if TASK_LOCK.locked():
-            logger.info(f"Task is running, ignoring non-command message from {user_id}")
+            logger.info(f"Task is running, ignoring message from {user_id}")
             return
 
-        # 3. 只有当用户发送的是明显的文字输入（且不是空消息或特殊字符）时，才回复提示
+        # 3. 只有当用户发送的是明显的文字输入时，才回复提示
         if text and len(text) > 0 and not text.startswith("{"):
             send_message(user_id, "输入 '分析' 或 'Start' 开启配置面板。")
             
     except Exception as e:
-        logger.error(f"Error handling message: {e}")
+        logger.error(f"Error in handle_message: {e}", exc_info=True)
+        # 这里不要再 raise，否则 Webhook 会返回 500
 
 def handle_card_action(data: P2CardActionTrigger):
     """处理卡片按钮点击。"""

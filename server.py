@@ -32,10 +32,11 @@ logger.info(f"FFMPEG_PATH: {config.FFMPEG_PATH}")
 logger.info("================================")
 
 # --- 事件处理程序 ---
-verification_token = config.FEISHU_VERIFICATION_TOKEN or ""
-encrypt_key = config.FEISHU_ENCRYPT_KEY or ""
+verification_token = config.FEISHU_VERIFICATION_TOKEN.strip() if config.FEISHU_VERIFICATION_TOKEN else None
+encrypt_key = config.FEISHU_ENCRYPT_KEY.strip() if config.FEISHU_ENCRYPT_KEY else None
 
 # Lark SDK Event Handler (用于处理业务逻辑)
+# 注意：encrypt_key 如果为空字符串，必须传 None，否则 SDK 会尝试解密导致 500
 event_handler = EventDispatcherHandler.builder(encrypt_key, verification_token) \
     .register_p2_im_message_receive_v1(handle_message) \
     .register_p2_card_action_trigger(handle_card_action) \
@@ -112,11 +113,20 @@ async def webhook_event(request: Request):
 
     # 3. 如果不是验证请求，或者手动解密失败，交给 SDK 标准流程
     try:
-        headers = dict(request.headers)
+        # 转换 header 键名为 SDK 期望的格式 (有些版本的 SDK 对大小写敏感)
+        headers = {k.lower(): v for k, v in request.headers.items()}
+        # 针对 lark-oapi 的特殊处理：确保 SDK 能够找到必要的签名头 (使用 SDK 期望的大写形式)
+        standard_headers = {
+             "X-Lark-Signature": headers.get("x-lark-signature", ""),
+             "X-Lark-Request-Timestamp": headers.get("x-lark-request-timestamp", ""),
+             "X-Lark-Request-Nonce": headers.get("x-lark-request-nonce", ""),
+             "Content-Type": headers.get("content-type", "application/json")
+         }
+        
         lark_req = lark_oapi.parse_req(
             arg=lark_oapi.Request(
                 uri=str(request.url), 
-                headers=headers, 
+                headers=standard_headers, 
                 body=req_body
             )
         )

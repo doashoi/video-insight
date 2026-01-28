@@ -8,10 +8,5 @@ Pillow
 tqdm
 lark-oapi
 opencv-python-headless
-modelscope
-funasr
-numba
-umap-learn
-numpy
 oss2
 pycryptodome

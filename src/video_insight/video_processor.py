@@ -6,25 +6,23 @@ import re
 import math
 import shutil
 import traceback
+import json
+import requests
+import time
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 
 import cv2
-import torch
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-
-# 如果需要，添加隐式依赖项到 sys.path，或者依赖已安装的包。
-# funasr 和 modelscope 是已安装的包。
 
 from .config import config
 
 class VideoAnalyzer:
     def __init__(self):
-        """使用配置中的模型和路径初始化 VideoAnalyzer。"""
-        self.model_dir = config.MODEL_DIR
-        self.vad_model_dir = config.VAD_MODEL_DIR
+        """使用配置中的路径初始化 VideoAnalyzer。"""
         self.ffmpeg_exe = config.FFMPEG_PATH
+        self.api_key = config.DASHSCOPE_API_KEY
         
         # 注册 FFmpeg 路径
         ffmpeg_dir = os.path.dirname(str(self.ffmpeg_exe))
@@ -32,25 +30,13 @@ class VideoAnalyzer:
             os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ["PATH"]
             print(f"[Init] FFmpeg 路径已注册: {ffmpeg_dir}")
 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.asr_model = None
-        self.vad_model = None
-
     def release_model(self):
-        """释放 GPU 内存。"""
-        if self.asr_model is not None:
-            del self.asr_model
-        if self.vad_model is not None:
-            del self.vad_model
-        self.asr_model = None
-        self.vad_model = None
+        """释放资源。"""
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        print("[System] GPU 内存已释放")
 
     def extract_audio_track(self, video_path: str, audio_path: str) -> bool:
         """从视频提取音频 (16k, mono, pcm_s16le)。"""
+        # 注意：DashScope ASR 支持多种格式，但 16k mono wav 是最通用的
         cmd = [
             str(self.ffmpeg_exe), "-y", "-i", video_path,
             "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
@@ -64,44 +50,8 @@ class VideoAnalyzer:
             print(f"[Error] 音频提取失败: {e}")
             return False
 
-    def _load_models(self):
-        """延迟加载模型。"""
-        if self.asr_model is None or self.vad_model is None:
-            # 如果需要，将 model_dir 添加到 sys.path 以确保本地导入工作
-            # 注意: 通常 funasr 会处理这个，但为了安全起见我们保留它，以防模型依赖本地代码
-            if str(self.model_dir) not in sys.path:
-                sys.path.insert(0, str(self.model_dir))
-            
-            try:
-                from funasr import AutoModel
-            except ImportError:
-                print("[Error] 缺少 'funasr' 库。请安装它: pip install funasr")
-                raise
-
-            print(f"[Init] 正在 {self.device} 上加载模型...")
-            
-            try:
-                print(f"[Init] 正在加载 VAD 模型: {self.vad_model_dir.name}")
-                self.vad_model = AutoModel(
-                    model=str(self.vad_model_dir),
-                    trust_remote_code=True,
-                    device=self.device,
-                    disable_update=True
-                )
-
-                print(f"[Init] 正在加载 SenseVoice 模型: {self.model_dir.name}")
-                self.asr_model = AutoModel(
-                    model=str(self.model_dir),
-                    trust_remote_code=False,
-                    device=self.device,
-                    disable_update=True
-                )
-            except Exception as e:
-                print(f"[Error] 模型加载失败: {e}")
-                raise
-
     def analyze_audio(self, video_path: str, output_dir: str) -> Optional[List[Dict]]:
-        """在视频音频上运行 VAD + ASR。"""
+        """调用阿里云 DashScope ASR 服务进行识别。"""
         temp_audio_dir = Path(output_dir) / "temp_audio"
         temp_audio_dir.mkdir(exist_ok=True)
         audio_path = temp_audio_dir / "full_audio.wav"
@@ -109,106 +59,149 @@ class VideoAnalyzer:
         if not self.extract_audio_track(video_path, str(audio_path)):
             return None
 
-        try:
-            self._load_models()
-        except Exception:
+        print(f"[Analysis] 正在通过 DashScope 处理音频: {audio_path.name}")
+        
+        if not self.api_key:
+            print("[Error] 未配置 DASHSCOPE_API_KEY，无法进行 ASR 识别")
             return None
 
-        print(f"[Analysis] 正在处理音频: {audio_path.name}")
-        results = []
+        # 1. 语音识别 (使用 DashScope 录音文件识别 API)
+        # 文档: https://help.aliyun.com/zh/dashscope/developer-reference/asr-quick-start
         try:
-            # 1. VAD (语音活动检测)
-            print("[VAD] 正在检测语音片段...")
-            vad_res = self.vad_model.generate(
-                input=str(audio_path),
-                max_single_segment_time=1500,
-                max_end_silence_time=150,
-                min_start_silence_time=100,
-                min_speech_duration_ms=100,
-            )
+            # 第一步：获取上传文件的 URL (如果是本地文件，DashScope 需要先上传到 OSS 或使用临时链接)
+            # 为了简单起见，我们使用 DashScope 的文件上传接口（如果支持）
+            # 或者，更通用的做法是使用 Paraformer-V1 的实时/异步接口
             
-            segments = []
-            if vad_res and len(vad_res) > 0 and 'value' in vad_res[0]:
-                segments = vad_res[0]['value']
-                print(f"[VAD] 发现 {len(segments)} 个片段")
-            else:
-                print(f"[Warning] 未检测到语音 (原始结果: {vad_res})")
+            # 这里我们使用 DashScope 的录音文件识别（离线模式），因为它支持长音频且自带 VAD 切分
+            # 注意：DashScope 离线识别通常需要一个公网可访问的 URL。
+            # 在没有公网 URL 的情况下，我们可以使用 DashScope 的文件上传功能。
+            
+            file_url = self._upload_file_to_dashscope(str(audio_path))
+            if not file_url:
                 return None
-
-            # 2. ASR (自动语音识别)
-            print("[ASR] 正在识别语音...")
-            clean_pattern = re.compile(r'<\|.*?\|>')
             
-            for i, (start_ms, end_ms) in enumerate(segments):
-                chunk_path = temp_audio_dir / f"chunk_{i:03d}.wav"
-                duration_s = (end_ms - start_ms) / 1000.0
-                start_s = start_ms / 1000.0
+            task_id = self._submit_asr_task(file_url)
+            if not task_id:
+                return None
                 
-                cmd = [
-                    str(self.ffmpeg_exe), "-y", "-i", str(audio_path),
-                    "-ss", f"{start_s:.3f}", "-t", f"{duration_s:.3f}",
-                    "-c", "copy", str(chunk_path), "-loglevel", "error"
-                ]
-                subprocess.run(cmd, check=True)
+            print(f"[ASR] 任务已提交, TaskID: {task_id}, 正在等待结果...")
+            
+            # 轮询结果
+            result_data = self._wait_for_asr_result(task_id)
+            if not result_data:
+                return None
                 
-                asr_res = self.asr_model.generate(
-                    input=str(chunk_path),
-                    cache={},
-                    language="zh",
-                    use_itn=True,
-                    batch_size_s=60,
-                    merge_vad=False, 
-                    return_spk_res=False,
-                )
+            # 2. 解析结果
+            results = []
+            sentences = result_data.get("output", {}).get("sentences", [])
+            for s in sentences:
+                # 记录句子级的时间戳
+                item = {
+                    'start': s.get('begin_time'),
+                    'end': s.get('end_time'),
+                    'text': s.get('text', '').strip(),
+                    'words': [] # 记录词级时间戳用于更精确的截图
+                }
                 
-                raw_sentences = []
-                if asr_res and len(asr_res) > 0:
-                    raw_text = asr_res[0].get('text', '')
-                    clean_text = clean_pattern.sub('', raw_text).strip()
-                    clean_text = re.sub(r'\s+', ' ', clean_text)
-                    
-                    if clean_text:
-                        punc_list = "，。！？；"
-                        split_pattern = f'([^{punc_list}]+[{punc_list}]?)'
-                        sub_sentences = re.findall(split_pattern, clean_text)
-                        
-                        if len(sub_sentences) > 1:
-                            total_chars = len(clean_text)
-                            current_ms = start_ms
-                            for sub_s in sub_sentences:
-                                sub_len = len(sub_s)
-                                ratio = sub_len / total_chars
-                                sub_duration = (end_ms - start_ms) * ratio
-                                raw_sentences.append({
-                                    'start': current_ms,
-                                    'end': current_ms + sub_duration,
-                                    'text': sub_s.strip()
-                                })
-                                current_ms += sub_duration
-                        else:
-                            raw_sentences.append({
-                                'start': start_ms,
-                                'end': end_ms,
-                                'text': clean_text
-                            })
-
-                for item in raw_sentences:
-                    text = item['text']
-                    if text:
-                        s_s = item['start'] / 1000.0
-                        s_e = item['end'] / 1000.0
-                        print(f"  [{s_s:.2f}s - {s_e:.2f}s]: {text}")
-                        results.append(item)
+                # 尝试获取词级时间戳 (timestamp_alignment_enabled 开启时返回)
+                words = s.get('words', [])
+                if words:
+                    for w in words:
+                        item['words'].append({
+                            'text': w.get('text'),
+                            'start': w.get('begin_time'),
+                            'end': w.get('end_time')
+                        })
                 
-                try: chunk_path.unlink()
-                except: pass
-                
+                if item['text']:
+                    s_s = item['start'] / 1000.0
+                    s_e = item['end'] / 1000.0
+                    print(f"  [{s_s:.2f}s - {s_e:.2f}s]: {item['text']}")
+                    results.append(item)
+            
             return results
 
         except Exception as e:
-            print(f"[Error] 推理失败: {e}")
+            print(f"[Error] ASR 识别失败: {e}")
             traceback.print_exc()
             return None
+        finally:
+            # 清理临时音频文件
+            try: shutil.rmtree(temp_audio_dir)
+            except: pass
+
+    def _upload_file_to_dashscope(self, file_path: str) -> Optional[str]:
+        """将文件上传到 DashScope 临时存储。"""
+        url = "https://dashscope.aliyuncs.com/api/v1/files"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        try:
+            with open(file_path, 'rb') as f:
+                files = {'file': f}
+                data = {'description': 'audio_for_asr'}
+                resp = requests.post(url, headers=headers, files=files, data=data, timeout=60)
+                resp.raise_for_status()
+                res = resp.json()
+                file_id = res.get('id')
+                # 转换 file_id 为内部 URL
+                if file_id:
+                    return f"https://dashscope.aliyuncs.com/api/v1/files/{file_id}"
+        except Exception as e:
+            print(f"[Upload Error] 上传音频失败: {e}")
+        return None
+
+    def _submit_asr_task(self, file_url: str) -> Optional[str]:
+        """提交 ASR 任务。"""
+        url = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "X-DashScope-Async": "enable"
+        }
+        payload = {
+            "model": "fun-asr-mtl-2025-08-25",
+            "input": {
+                "file_urls": [file_url]
+            },
+            "parameters": {
+                "language_hints": ["zh", "en"],
+                "timestamp_alignment_enabled": True,
+                "rich_transcription_enabled": True
+            }
+        }
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=20)
+            resp.raise_for_status()
+            return resp.json().get("output", {}).get("task_id")
+        except Exception as e:
+            print(f"[ASR Error] 提交任务失败: {e}")
+        return None
+
+    def _wait_for_asr_result(self, task_id: str) -> Optional[Dict]:
+        """轮询 ASR 任务结果。"""
+        url = f"https://dashscope.aliyuncs.com/api/v1/tasks/{task_id}"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        
+        max_retries = 60 # 最多等 60 秒
+        for i in range(max_retries):
+            try:
+                resp = requests.get(url, headers=headers, timeout=10)
+                resp.raise_for_status()
+                res = resp.json()
+                status = res.get("output", {}).get("task_status")
+                
+                if status == "SUCCEEDED":
+                    return res
+                elif status in ["FAILED", "CANCELED"]:
+                    print(f"[ASR Error] 任务状态异常: {status}")
+                    return None
+                
+                time.sleep(1)
+            except Exception as e:
+                print(f"[ASR Error] 轮询结果失败: {e}")
+                time.sleep(1)
+        
+        print("[ASR Error] 任务超时")
+        return None
 
     def _get_anchors(self, results: List[Dict], video_path: str) -> List[float]:
         """基于语音和视觉变化生成锚点。"""
@@ -231,17 +224,34 @@ class VideoAnalyzer:
         # 1. 基于语音的锚点
         print("[Anchors] 正在生成基于语音的锚点...")
         for res in results:
-            start_s = res['start'] / 1000.0
-            end_s = res['end'] / 1000.0
-            
-            s_anchor = round(start_s + 0.3, 2)
-            e_anchor = round(end_s - 0.2, 2)
-            
-            if e_anchor > s_anchor:
-                anchors.append(s_anchor)
-                anchors.append(e_anchor)
+            # 优先使用词级时间戳（如果存在）
+            if 'words' in res and res['words']:
+                # 在每个句子的开头和结尾打桩
+                first_word = res['words'][0]
+                last_word = res['words'][-1]
+                
+                # 句子开头
+                anchors.append(round(first_word['start'] / 1000.0 + 0.1, 2))
+                # 句子结尾
+                anchors.append(round(last_word['end'] / 1000.0 - 0.1, 2))
+                
+                # 如果句子很长，在中间也打桩
+                if len(res['words']) > 10:
+                    mid_word = res['words'][len(res['words']) // 2]
+                    anchors.append(round(mid_word['start'] / 1000.0, 2))
             else:
-                anchors.append(round((start_s + end_s) / 2, 2))
+                # 回退到句子级时间戳
+                start_s = res['start'] / 1000.0
+                end_s = res['end'] / 1000.0
+                
+                s_anchor = round(start_s + 0.3, 2)
+                e_anchor = round(end_s - 0.2, 2)
+                
+                if e_anchor > s_anchor:
+                    anchors.append(s_anchor)
+                    anchors.append(e_anchor)
+                else:
+                    anchors.append(round((start_s + end_s) / 2, 2))
 
         # 2. 视觉变化检测
         print("[Anchors] 正在检测视觉变化...")
@@ -533,54 +543,25 @@ def process_video_folder(video_folder: Path, output_root: Path, progress_callbac
             if progress_callback:
                 progress_callback(f"⚠️ 音频提取失败: {video_name}")
 
-    # 阶段 2: 截图
-    if progress_callback:
-        progress_callback(f"🖼️ 音频提取完成，正在进行截图，共计 {len(video_files)} 条...")
-        
-    for video_file in video_files:
-        video_name = video_file.name
-        video_basename = video_file.stem
+        # 阶段 2: 截图
+        if progress_callback:
+            progress_callback(f"🖼️ 正在进行视频截图...")
+            
         video_out_dir = output_root / video_basename
-        
         image_out_dir = video_out_dir / "cache_images"
         sheet_path = video_out_dir / "final_sheet.jpg"
-        transcript_path = video_out_dir / "transcript_detailed.txt"
         
-        if sheet_path.exists():
-            continue
+        if not sheet_path.exists() and results:
+            print(f"\n>>> 正在处理图像: {video_name}")
+            anchors = analyzer._get_anchors(results, str(video_file))
+            frame_info = analyzer.extract_frames(str(video_file), anchors, str(image_out_dir))
             
-        if not transcript_path.exists():
-            continue
-            
-        print(f"\n>>> 正在处理图像: {video_name}")
-        
-        # 从字幕重新加载结果 (简化解析，或如果需要重新运行分析？
-        # 重新运行分析很昂贵。我们需要将字幕解析回 'results' 格式供 _get_anchors 使用)
-        # 实际上 _get_anchors 需要毫秒级的 'start' 和 'end'。
-        # 让我们解析字幕文件。
-        results = []
-        try:
-            with open(transcript_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    # 格式: [0.00s - 1.20s] Text
-                    parts = line.strip().split("] ")
-                    if len(parts) >= 2:
-                        time_part = parts[0][1:] # 0.00s - 1.20s
-                        times = time_part.split(" - ")
-                        start_ms = float(times[0].replace("s", "")) * 1000
-                        end_ms = float(times[1].replace("s", "")) * 1000
-                        results.append({'start': start_ms, 'end': end_ms})
-        except Exception as e:
-            print(f"[Error] 解析字幕失败 {video_name}: {e}")
-            continue
-
-        anchors = analyzer._get_anchors(results, str(video_file))
-        frame_info = analyzer.extract_frames(str(video_file), anchors, str(image_out_dir))
-        
-        final_frames = analyzer.remove_duplicate_frames(frame_info)
-        analyzer.create_contact_sheet(final_frames, str(sheet_path))
-        
-        print(f"[Done] 完成图像处理: {video_name}")
+            if frame_info:
+                final_frames = analyzer.remove_duplicate_frames(frame_info)
+                analyzer.create_contact_sheet(final_frames, str(sheet_path))
+                print(f"[Done] 完成图像处理: {video_name}")
+            else:
+                print(f"[Warning] 未提取到有效帧: {video_name}")
 
         # --- 自动删除视频以节省空间 ---
         try:
@@ -592,3 +573,4 @@ def process_video_folder(video_folder: Path, output_root: Path, progress_callbac
     analyzer.release_model()
     if progress_callback:
         progress_callback("✅ 视频预处理（音频+截图）全部完成！")
+
