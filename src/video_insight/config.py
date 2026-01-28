@@ -43,7 +43,13 @@ class Config:
     # 模型路径配置
     MODEL_DIR = ROOT_DIR / "models" / "SenseVoiceSmall"
     VAD_MODEL_DIR = ROOT_DIR / "models" / "speech_fsmn_vad"
-    FFMPEG_PATH = ROOT_DIR / "ffmpeg_tool" / "ffmpeg.exe"
+    
+    # FFMPEG 路径配置
+    if os.name == 'nt':
+        FFMPEG_PATH = ROOT_DIR / "ffmpeg_tool" / "ffmpeg.exe"
+    else:
+        # Linux/Docker 环境下直接使用系统命令
+        FFMPEG_PATH = "ffmpeg"
     
     # 运行时配置
     MAX_WORKERS = 5
