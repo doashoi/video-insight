@@ -110,14 +110,18 @@ async def webhook_event(request: Request):
         
         # 转换 header 键名为 SDK 期望的格式 (有些版本的 SDK 对大小写敏感)
         # 针对 lark-oapi 的特殊处理：确保 SDK 能够找到必要的签名头
-        # 我们手动添加大写版本的头，以防 SDK 内部查找时大小写敏感
-        standard_headers = dict(request.headers)
-        if "x-lark-request-timestamp" in standard_headers:
-            standard_headers["X-Lark-Request-Timestamp"] = standard_headers["x-lark-request-timestamp"]
-        if "x-lark-request-nonce" in standard_headers:
-            standard_headers["X-Lark-Request-Nonce"] = standard_headers["x-lark-request-nonce"]
-        if "x-lark-signature" in standard_headers:
-            standard_headers["X-Lark-Signature"] = standard_headers["x-lark-signature"]
+        # 我们手动添加大写和原始版本的头，确保万无一失
+        standard_headers = {}
+        for k, v in request.headers.items():
+            # 保持原始 (通常是小写)
+            standard_headers[k] = v
+            # 兼容 SDK 可能需要的各种格式
+            if k.lower() == "x-lark-request-timestamp":
+                standard_headers["X-Lark-Request-Timestamp"] = v
+            elif k.lower() == "x-lark-request-nonce":
+                standard_headers["X-Lark-Request-Nonce"] = v
+            elif k.lower() == "x-lark-signature":
+                standard_headers["X-Lark-Signature"] = v
         
         # 打印关键头信息，方便排查
         logger.info(f"SDK Headers (Keys): {list(standard_headers.keys())}")
