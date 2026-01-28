@@ -141,43 +141,67 @@ class VideoAnalyzer:
 
     def _upload_file_to_dashscope(self, file_path: str) -> Optional[str]:
         """将文件上传到 DashScope 临时存储。"""
+        import sys
         url = "https://dashscope.aliyuncs.com/api/v1/files"
+        
+        if not self.api_key:
+            print("[Upload Error] DASHSCOPE_API_KEY 为空，请检查环境变量配置。")
+            sys.stdout.flush()
+            return None
+            
         headers = {"Authorization": f"Bearer {self.api_key}"}
         try:
             # Check file size
             if not os.path.exists(file_path):
                 print(f"[Upload Error] 文件不存在: {file_path}")
+                sys.stdout.flush()
                 return None
             f_size = os.path.getsize(file_path)
             print(f"[Upload] 准备上传音频: {Path(file_path).name}, 大小: {f_size/1024/1024:.2f}MB")
+            
+            # DashScope 文件上传限制通常为 150MB
+            if f_size > 150 * 1024 * 1024:
+                print(f"[Upload Warning] 文件大小超过 150MB，可能会导致上传失败。")
+                
             if f_size == 0:
                  print(f"[Upload Error] 音频文件大小为 0，无法上传")
+                 sys.stdout.flush()
                  return None
 
             with open(file_path, 'rb') as f:
                 files = {'file': f}
-                data = {'description': 'audio_for_asr'}
-                resp = requests.post(url, headers=headers, files=files, data=data, timeout=120) # 增加超时时间
-                resp.raise_for_status()
+                # ASR 任务建议使用 purpose='audio'
+                data = {'description': 'audio_for_asr', 'purpose': 'audio'}
+                print(f"[Upload] 正在发送请求到 {url}...")
+                sys.stdout.flush()
+                resp = requests.post(url, headers=headers, files=files, data=data, timeout=120)
+                
+                if resp.status_code != 200:
+                    print(f"[Upload Error] 状态码: {resp.status_code}, 响应: {resp.text}")
+                    sys.stdout.flush()
+                    return None
+                    
                 res = resp.json()
                 file_id = res.get('id')
-                # ASR 任务需要使用 dashscope://sdk/file/file_id 格式
                 if file_id:
+                    print(f"[Upload Success] File ID: {file_id}")
+                    sys.stdout.flush()
                     return f"dashscope://sdk/file/{file_id}"
                 else:
                     print(f"[Upload Error] 响应中缺少 id: {res}")
         except Exception as e:
-            # 增强错误日志打印
+            print(f"[Upload Error] 异常详情: {str(e)}")
             if 'resp' in locals():
                 try:
-                    print(f"[Upload Error] 详情: {resp.status_code} - {resp.text}")
+                    print(f"[Upload Error] HTTP 响应内容: {resp.text}")
                 except:
                     pass
-            print(f"[Upload Error] 上传音频失败: {e}")
+        sys.stdout.flush()
         return None
 
     def _submit_asr_task(self, file_url: str) -> Optional[str]:
         """提交 ASR 任务。"""
+        import sys
         url = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -196,18 +220,30 @@ class VideoAnalyzer:
             }
         }
         try:
+            print(f"[ASR] 正在提交任务，文件 URL: {file_url}")
+            sys.stdout.flush()
             resp = requests.post(url, headers=headers, json=payload, timeout=20)
-            resp.raise_for_status()
-            return resp.json().get("output", {}).get("task_id")
+            if resp.status_code != 200:
+                print(f"[ASR Error] 提交失败，状态码: {resp.status_code}, 详情: {resp.text}")
+                sys.stdout.flush()
+                return None
+            task_id = resp.json().get("output", {}).get("task_id")
+            if task_id:
+                print(f"[ASR Success] 任务提交成功，Task ID: {task_id}")
+            sys.stdout.flush()
+            return task_id
         except Exception as e:
             print(f"[ASR Error] 提交任务失败: {e}")
+            sys.stdout.flush()
         return None
 
     def _wait_for_asr_result(self, task_id: str) -> Optional[Dict]:
         """轮询 ASR 任务结果。"""
+        import sys
         url = f"https://dashscope.aliyuncs.com/api/v1/tasks/{task_id}"
         headers = {"Authorization": f"Bearer {self.api_key}"}
         
+        print(f"[ASR] 开始轮询任务结果 (Task ID: {task_id})...")
         max_retries = 60 # 最多等 60 秒
         for i in range(max_retries):
             try:
@@ -216,18 +252,27 @@ class VideoAnalyzer:
                 res = resp.json()
                 status = res.get("output", {}).get("task_status")
                 
+                if i % 10 == 0: # 每 10 秒打印一次状态
+                    print(f"[ASR] 轮询中... 当前状态: {status}")
+                    sys.stdout.flush()
+
                 if status == "SUCCEEDED":
+                    print(f"[ASR Success] 任务完成！")
+                    sys.stdout.flush()
                     return res
                 elif status in ["FAILED", "CANCELED"]:
-                    print(f"[ASR Error] 任务状态异常: {status}")
+                    print(f"[ASR Error] 任务状态异常: {status}, 详情: {res}")
+                    sys.stdout.flush()
                     return None
                 
                 time.sleep(1)
             except Exception as e:
                 print(f"[ASR Error] 轮询结果失败: {e}")
+                sys.stdout.flush()
                 time.sleep(1)
         
         print("[ASR Error] 任务超时")
+        sys.stdout.flush()
         return None
 
     def _get_anchors(self, results: List[Dict], video_path: str) -> List[float]:
