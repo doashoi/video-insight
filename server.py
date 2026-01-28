@@ -22,6 +22,15 @@ logger = logging.getLogger("FeishuBot-Webhook")
 
 app = FastAPI()
 
+# 启动时打印配置状态（安全脱敏）
+logger.info("=== Bot Configuration Status ===")
+logger.info(f"FEISHU_APP_ID: {config.FEISHU_APP_ID[:4]}***" if config.FEISHU_APP_ID else "FEISHU_APP_ID: Missing")
+logger.info(f"FEISHU_VERIFICATION_TOKEN: {'Set' if config.FEISHU_VERIFICATION_TOKEN else 'Missing'}")
+logger.info(f"FEISHU_ENCRYPT_KEY: {'Set' if config.FEISHU_ENCRYPT_KEY else 'Missing'}")
+logger.info(f"IS_FC: {config.IS_FC}")
+logger.info(f"FFMPEG_PATH: {config.FFMPEG_PATH}")
+logger.info("================================")
+
 # --- 事件处理程序 ---
 verification_token = config.FEISHU_VERIFICATION_TOKEN or ""
 encrypt_key = config.FEISHU_ENCRYPT_KEY or ""
@@ -67,6 +76,9 @@ async def webhook_event(request: Request):
         # 如果不是 JSON，直接交给 SDK 处理（虽然不太可能）
         req_json = {}
 
+    # 打印简短的请求日志，方便排查
+    logger.info(f"Received webhook request: {req_body[:100]}...")
+
     # 2. 优先处理 url_verification (手动处理以确保 100% 成功)
     # 飞书配置保存时发送的请求
     is_verification = False
@@ -99,22 +111,34 @@ async def webhook_event(request: Request):
         )
 
     # 3. 如果不是验证请求，或者手动解密失败，交给 SDK 标准流程
-    headers = dict(request.headers)
-    lark_req = lark_oapi.parse_req(
-        arg=lark_oapi.Request(
-            uri=str(request.url), 
-            headers=headers, 
-            body=req_body
+    try:
+        headers = dict(request.headers)
+        lark_req = lark_oapi.parse_req(
+            arg=lark_oapi.Request(
+                uri=str(request.url), 
+                headers=headers, 
+                body=req_body
+            )
         )
-    )
-    
-    lark_resp = event_handler.do(lark_req)
-    
-    return Response(
-        content=lark_resp.body, 
-        status_code=lark_resp.code,
-        media_type="application/json"
-    )
+        
+        lark_resp = event_handler.do(lark_req)
+        
+        # 如果 SDK 返回 500，记录一下 body
+        if lark_resp.code == 500:
+            logger.error(f"SDK returned 500. Body: {lark_resp.body}")
+
+        return Response(
+            content=lark_resp.body or b"", 
+            status_code=lark_resp.code or 200,
+            media_type="application/json"
+        )
+    except Exception as e:
+        logger.error(f"Error in webhook_event: {e}", exc_info=True)
+        return Response(
+            content=json.dumps({"status": "failed", "error": str(e)}),
+            status_code=500,
+            media_type="application/json"
+        )
 
 # --- 阿里云函数计算 (FC) 初始化适配器 ---
 @app.post("/initialize")
