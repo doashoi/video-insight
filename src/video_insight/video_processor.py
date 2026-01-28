@@ -27,8 +27,8 @@ class VideoAnalyzer:
         self.ffmpeg_exe = config.FFMPEG_PATH
         
         # 注册 FFmpeg 路径
-        ffmpeg_dir = os.path.dirname(self.ffmpeg_exe)
-        if ffmpeg_dir not in os.environ["PATH"]:
+        ffmpeg_dir = os.path.dirname(str(self.ffmpeg_exe))
+        if ffmpeg_dir and ffmpeg_dir not in os.environ["PATH"]:
             os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ["PATH"]
             print(f"[Init] FFmpeg 路径已注册: {ffmpeg_dir}")
 

@@ -1,11 +1,12 @@
+from video_insight.config import config
 from video_insight.feishu_syncer import FeishuSyncer
 import logging
 
 # 配置日志以便看到更多信息
 logging.basicConfig(level=logging.INFO)
 
-app_token = "PElTbhUNBa4BqPsQoAJcEdnMnug"
-table_id = "tblbANdNhWMHPs9F"
+app_token = config.SOURCE_APP_TOKEN or "YOUR_APP_TOKEN"
+table_id = config.SOURCE_TABLE_ID or "YOUR_TABLE_ID"
 
 print(f"Connecting to Feishu App: {app_token}, Table: {table_id}")
 syncer = FeishuSyncer()

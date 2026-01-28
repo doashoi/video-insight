@@ -4,6 +4,7 @@ import os
 import shutil
 import logging
 import re
+import time
 from datetime import datetime
 from typing import Optional, Tuple
 from pathlib import Path
@@ -150,9 +151,14 @@ def run_pipeline_task(user_id: str, source_url: str, progress_callback=None, tem
         report_progress(f"📋 已定位源表格: {original_name}")
 
         # 设置临时目录
-        # 优先使用桌面路径（如果存在）
-        base_path = config.DESKTOP_PATH if config.DESKTOP_PATH.exists() else config.ROOT_DIR
-        cache_root_dir = base_path / f"{safe_name}_缓存"
+        # 优先使用配置中定义的 DESKTOP_PATH 或 ROOT_DIR
+        base_path = config.DESKTOP_PATH if config.DESKTOP_PATH and config.DESKTOP_PATH.exists() else config.ROOT_DIR
+        
+        # 在 FC 环境下，强制使用 /tmp 下的子目录以确保可写
+        if config.IS_FC:
+            cache_root_dir = Path("/tmp") / f"task_{user_id}_{int(time.time())}"
+        else:
+            cache_root_dir = base_path / f"{safe_name}_缓存"
         video_download_dir = cache_root_dir / "Data_Analysis_Video_Download"
         result_dir = cache_root_dir / "Data_Analysis_Result"
         

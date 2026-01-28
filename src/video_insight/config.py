@@ -11,8 +11,17 @@ class Config:
     # 项目根目录
     ROOT_DIR = Path(__file__).parent.parent.parent
     
-    # 默认下载路径：如果是 Windows 且是本地测试环境，默认下载到桌面
-    if os.name == 'nt':
+    # 检测运行环境
+    IS_FC = os.environ.get("FC_FUNCTION_NAME") is not None or os.environ.get("FC_SERVICE_NAME") is not None
+
+    # 默认下载路径逻辑
+    if IS_FC:
+        # 阿里云 FC 环境：只能使用 /tmp 目录
+        OUTPUT_DIR = Path("/tmp/video_insight/video_download")
+        RESULT_DIR = Path("/tmp/video_insight/result")
+        DESKTOP_PATH = Path("/tmp") # FC 环境无桌面，指向 tmp
+    elif os.name == 'nt':
+        # Windows 本地环境
         DESKTOP_PATH = Path(os.path.join(os.environ.get("USERPROFILE", ""), "Desktop"))
         if DESKTOP_PATH.exists():
             OUTPUT_DIR = DESKTOP_PATH / "Data_Analysis_Video_Download"
@@ -21,9 +30,10 @@ class Config:
             OUTPUT_DIR = ROOT_DIR / "Data_Analysis_Video_Download"
             RESULT_DIR = ROOT_DIR / "result"
     else:
-        # 非 Windows 环境 (如 Linux/Docker)
+        # 其他环境 (如通用 Linux/Docker)
         OUTPUT_DIR = ROOT_DIR / "Data_Analysis_Video_Download"
         RESULT_DIR = ROOT_DIR / "result"
+        DESKTOP_PATH = ROOT_DIR
     
     # 如果目录不存在则创建
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -53,7 +63,13 @@ class Config:
     # 模型路径配置
     MODEL_DIR = ROOT_DIR / "models" / "SenseVoiceSmall"
     VAD_MODEL_DIR = ROOT_DIR / "models" / "speech_fsmn_vad"
-    FFMPEG_PATH = ROOT_DIR / "ffmpeg_tool" / "ffmpeg.exe"
+    
+    # FFMPEG 路径配置：跨平台适配
+    if os.name == 'nt':
+        FFMPEG_PATH = ROOT_DIR / "ffmpeg_tool" / "ffmpeg.exe"
+    else:
+        # Linux/FC 环境通常直接使用系统中的 ffmpeg
+        FFMPEG_PATH = Path("ffmpeg")
     
     # 运行时配置
     MAX_WORKERS = 5
