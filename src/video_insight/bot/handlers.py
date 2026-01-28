@@ -18,11 +18,17 @@ logger = logging.getLogger("BotHandlers")
 _app_id = config.FEISHU_APP_ID.strip() if config.FEISHU_APP_ID else ""
 _app_secret = config.FEISHU_APP_SECRET.strip() if config.FEISHU_APP_SECRET else ""
 
-logger.info(f"Initializing Feishu Client with App ID: {_app_id[:5]}***")
+# 移除可能存在的引号（防止用户直接从 .env 复制带引号的值）
+_app_id = _app_id.replace('"', '').replace("'", "")
+_app_secret = _app_secret.replace('"', '').replace("'", "")
+
+logger.info(f"Initializing Feishu Client with App ID: {_app_id[:5]}*** (Length: {len(_app_id)})")
+logger.info(f"App Secret (Masked): {_app_secret[:2]}***{_app_secret[-2:] if len(_app_secret)>2 else ''} (Length: {len(_app_secret)})")
 
 _client = lark_oapi.Client.builder() \
     .app_id(_app_id) \
     .app_secret(_app_secret) \
+    .domain("https://open.feishu.cn") \
     .log_level(lark_oapi.LogLevel.INFO) \
     .build()
 
