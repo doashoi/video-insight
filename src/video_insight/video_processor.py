@@ -39,15 +39,19 @@ class VideoAnalyzer:
         # 注意：DashScope ASR 支持多种格式，但 16k mono wav 是最通用的
         cmd = [
             str(self.ffmpeg_exe), "-y", "-i", video_path,
-            "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
-            audio_path, "-loglevel", "error"
+            "-vn", "-c:a", "pcm_s16le", "-ar", "16000", "-ac", "1",
+            "-f", "wav", audio_path, "-loglevel", "error"
         ]
         try:
-            print(f"[Audio] 正在提取音频到: {audio_path}")
-            subprocess.run(cmd, check=True)
+            print(f"[Audio] 正在提取音频: {Path(video_path).name} -> {Path(audio_path).name}")
+            # 使用 subprocess.run 时捕获 stderr 以便打印更详细的错误
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"[Error] FFmpeg 提取音频失败 (退出码 {result.returncode}): {result.stderr}")
+                return False
             return True
-        except subprocess.CalledProcessError as e:
-            print(f"[Error] 音频提取失败: {e}")
+        except Exception as e:
+            print(f"[Error] 音频提取发生异常: {e}")
             return False
 
     def analyze_audio(self, video_path: str, output_dir: str) -> Optional[List[Dict]]:
@@ -57,6 +61,9 @@ class VideoAnalyzer:
         audio_path = temp_audio_dir / "full_audio.wav"
         
         if not self.extract_audio_track(video_path, str(audio_path)):
+            # 清理目录
+            try: shutil.rmtree(temp_audio_dir)
+            except: pass
             return None
 
         print(f"[Analysis] 正在通过 DashScope 处理音频: {audio_path.name}")
@@ -66,22 +73,15 @@ class VideoAnalyzer:
             return None
 
         # 1. 语音识别 (使用 DashScope 录音文件识别 API)
-        # 文档: https://help.aliyun.com/zh/dashscope/developer-reference/asr-quick-start
         try:
-            # 第一步：获取上传文件的 URL (如果是本地文件，DashScope 需要先上传到 OSS 或使用临时链接)
-            # 为了简单起见，我们使用 DashScope 的文件上传接口（如果支持）
-            # 或者，更通用的做法是使用 Paraformer-V1 的实时/异步接口
-            
-            # 这里我们使用 DashScope 的录音文件识别（离线模式），因为它支持长音频且自带 VAD 切分
-            # 注意：DashScope 离线识别通常需要一个公网可访问的 URL。
-            # 在没有公网 URL 的情况下，我们可以使用 DashScope 的文件上传功能。
-            
             file_url = self._upload_file_to_dashscope(str(audio_path))
             if not file_url:
+                print("[Error] 音频上传失败，无法进行 ASR 识别")
                 return None
             
             task_id = self._submit_asr_task(file_url)
             if not task_id:
+                print("[Error] ASR 任务提交失败")
                 return None
                 
             print(f"[ASR] 任务已提交, TaskID: {task_id}, 正在等待结果...")
@@ -93,7 +93,16 @@ class VideoAnalyzer:
                 
             # 2. 解析结果
             results = []
-            sentences = result_data.get("output", {}).get("sentences", [])
+            output = result_data.get("output", {})
+            # 兼容不同模型的响应结构 (有些在 output.sentences, 有些在 output.results[0].sentences)
+            sentences = output.get("sentences")
+            if sentences is None:
+                res_list = output.get("results", [])
+                if res_list:
+                    sentences = res_list[0].get("sentences", [])
+                else:
+                    sentences = []
+            
             for s in sentences:
                 # 记录句子级的时间戳
                 item = {
@@ -142,9 +151,9 @@ class VideoAnalyzer:
                 resp.raise_for_status()
                 res = resp.json()
                 file_id = res.get('id')
-                # 转换 file_id 为内部 URL
+                # ASR 任务需要使用 dashscope://sdk/file/file_id 格式
                 if file_id:
-                    return f"https://dashscope.aliyuncs.com/api/v1/files/{file_id}"
+                    return f"dashscope://sdk/file/{file_id}"
         except Exception as e:
             print(f"[Upload Error] 上传音频失败: {e}")
         return None
@@ -158,7 +167,7 @@ class VideoAnalyzer:
             "X-DashScope-Async": "enable"
         }
         payload = {
-            "model": "fun-asr-mtl-2025-08-25",
+            "model": "fun-asr-mtl-2025-08-25", # 
             "input": {
                 "file_urls": [file_url]
             },
