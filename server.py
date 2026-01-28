@@ -32,8 +32,13 @@ logger.info(f"FFMPEG_PATH: {config.FFMPEG_PATH}")
 logger.info("================================")
 
 # --- 事件处理程序 ---
-verification_token = config.FEISHU_VERIFICATION_TOKEN.strip() if config.FEISHU_VERIFICATION_TOKEN else None
-encrypt_key = config.FEISHU_ENCRYPT_KEY.strip() if config.FEISHU_ENCRYPT_KEY else None
+# 确保从配置中获取的值不包含多余空格
+_verification_token = config.FEISHU_VERIFICATION_TOKEN.strip() if config.FEISHU_VERIFICATION_TOKEN else ""
+_encrypt_key = config.FEISHU_ENCRYPT_KEY.strip() if config.FEISHU_ENCRYPT_KEY else ""
+
+# 如果是空字符串，则设为 None，因为 SDK 内部对 None 有特殊逻辑（如跳过校验）
+verification_token = _verification_token if _verification_token else None
+encrypt_key = _encrypt_key if _encrypt_key else None
 
 # Lark SDK Event Handler (用于处理业务逻辑)
 # 注意：encrypt_key 如果为空字符串，必须传 None，否则 SDK 会尝试解密导致 500
@@ -104,11 +109,15 @@ async def webhook_event(request: Request):
         logger.info(f"Request Headers: {dict(request.headers)}")
         
         # 转换 header 键名为 SDK 期望的格式 (有些版本的 SDK 对大小写敏感)
-        headers = {k.lower(): v for k, v in request.headers.items()}
         # 针对 lark-oapi 的特殊处理：确保 SDK 能够找到必要的签名头
-        # 注意：SDK 内部通常会自动处理大小写，但这里我们构造一个标准的 RawRequest 对象
-        # 我们直接使用原始 headers，但确保它们是 dict 类型
+        # 我们手动添加大写版本的头，以防 SDK 内部查找时大小写敏感
         standard_headers = dict(request.headers)
+        if "x-lark-request-timestamp" in standard_headers:
+            standard_headers["X-Lark-Request-Timestamp"] = standard_headers["x-lark-request-timestamp"]
+        if "x-lark-request-nonce" in standard_headers:
+            standard_headers["X-Lark-Request-Nonce"] = standard_headers["x-lark-request-nonce"]
+        if "x-lark-signature" in standard_headers:
+            standard_headers["X-Lark-Signature"] = standard_headers["x-lark-signature"]
         
         # 打印关键头信息，方便排查
         logger.info(f"SDK Headers (Keys): {list(standard_headers.keys())}")
@@ -135,10 +144,12 @@ async def webhook_event(request: Request):
             )
         
         # 记录 SDK 的响应状态
-        logger.info(f"SDK Response Code: {lark_resp.code}")
+        # 注意：lark-oapi 的 RawResponse 使用 status_code 而不是 code
+        status_code = getattr(lark_resp, "status_code", getattr(lark_resp, "code", 200))
+        logger.info(f"SDK Response Status Code: {status_code}")
         
         # 如果 SDK 返回 500，记录一下 body
-        if lark_resp.code == 500:
+        if status_code == 500:
             err_msg = lark_resp.body.decode('utf-8') if lark_resp.body else 'Empty'
             logger.error(f"SDK returned 500. Body: {err_msg}")
             # 返回 200 给飞书，避免飞书不断重试，但内容包含错误信息
@@ -150,7 +161,7 @@ async def webhook_event(request: Request):
 
         return Response(
             content=lark_resp.body or b"", 
-            status_code=lark_resp.code or 200,
+            status_code=status_code,
             media_type="application/json"
         )
     except Exception as e:
