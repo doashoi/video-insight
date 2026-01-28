@@ -154,7 +154,7 @@ class VideoAnalyzer:
         }
         # 使用 audio 字段传递 Base64 数据
         payload = {
-            "model": "fun-asr-mtl-2025-08-25", # 切换到支持同步/Base64 的模型
+            "model": "paraformer-v2", # 切换到支持同步/Base64 的模型
             "input": {
                 "audio": audio_base64
             },
