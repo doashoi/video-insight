@@ -6,6 +6,7 @@ __pycache__/
 *.pyd
 .pytest_cache/
 .python-version
+*.egg-info/
 
 # Models (大模型文件，运行时自动下载)
 models/SenseVoiceSmall/
@@ -19,6 +20,7 @@ models/**/am.mvn
 videos/
 output/
 result/
+Data_Analysis_Video_Download/
 
 # Tools (Windows版ffmpeg不需要提交，Docker会自动安装Linux版)
 ffmpeg_tool/
@@ -29,3 +31,8 @@ ffmpeg_tool/
 
 # API信息
 .env
+
+# Serverless Devs 缓存与生成的组件
+deploy/fc3/
+deploy/fc3_*/
+.s/

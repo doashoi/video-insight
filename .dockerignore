@@ -1,0 +1,38 @@
+# Git
+.git
+.gitignore
+
+# Python
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env
+pip-log.txt
+pip-delete-this-directory.txt
+.tox
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+
+# System
+.DS_Store
+*.swp
+
+# Project specific
+dist
+build
+video_insight.egg-info
+output
+deploy/data
+.env
+.idea
+.vscode
+models/

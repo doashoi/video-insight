@@ -1,0 +1,4 @@
+[console_scripts]
+vt = runners.cli:main
+vt-bot = runners.bot_runner:main
+vt-server = runners.server_runner:main

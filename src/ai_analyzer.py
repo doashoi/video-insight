@@ -11,10 +11,14 @@ from openpyxl.drawing.image import Image as ExcelImage
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from .config import config
+from feishu_syncer import FeishuSyncer
+
+from config import config
+
 
 class FeishuClient:
     """飞书 Wiki/多维表格 数据获取客户端。"""
+
     def __init__(self, app_id: str, app_secret: str):
         self.app_id = app_id
         self.app_secret = app_secret
@@ -24,7 +28,9 @@ class FeishuClient:
     def _ensure_token(self):
         """确保存在有效的 tenant_access_token。"""
         if not self.token:
-            url = f"{config.FEISHU_DOMAIN}/open-apis/auth/v3/tenant_access_token/internal"
+            url = (
+                f"{config.FEISHU_DOMAIN}/open-apis/auth/v3/tenant_access_token/internal"
+            )
             payload = {"app_id": self.app_id, "app_secret": self.app_secret}
             try:
                 res = requests.post(url, json=payload, timeout=10)
@@ -32,7 +38,7 @@ class FeishuClient:
                 self.token = res.json().get("tenant_access_token")
                 self.headers = {
                     "Authorization": f"Bearer {self.token}",
-                    "Content-Type": "application/json; charset=utf-8"
+                    "Content-Type": "application/json; charset=utf-8",
                 }
             except Exception as e:
                 print(f"[Feishu Error] 获取 Token 失败: {e}")
@@ -43,7 +49,7 @@ class FeishuClient:
         self._ensure_token()
         url = f"{config.FEISHU_DOMAIN}/open-apis/wiki/v2/spaces/get_node"
         params = {"token": wiki_token}
-        
+
         try:
             res = requests.get(url, headers=self.headers, params=params, timeout=10)
             res.raise_for_status()
@@ -51,53 +57,58 @@ class FeishuClient:
             node = data.get("node", {})
             obj_type = node.get("obj_type")
             obj_token = node.get("obj_token")
-            
+
             if obj_type != "bitable":
                 print(f"[Warning] Wiki 节点类型是 '{obj_type}', 预期为 'bitable'。")
-            
+
             return obj_token
         except Exception as e:
-                print(f"[Feishu Error] 解析 Wiki 节点失败: {e}")
-                raise
+            print(f"[Feishu Error] 解析 Wiki 节点失败: {e}")
+            raise
 
-    def get_all_records(self, app_token: str, table_id: str, view_id: str = None) -> List[Dict]:
+    def get_all_records(
+        self, app_token: str, table_id: str, view_id: str = None
+    ) -> List[Dict]:
         """获取多维表格所有记录。"""
         self._ensure_token()
         all_records = []
         page_token = ""
         has_more = True
-        
+
         print("🔍 正在从飞书多维表格获取数据...")
         while has_more:
             url = f"{config.FEISHU_DOMAIN}/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
             params = {"page_size": 100, "page_token": page_token}
             if view_id:
                 params["view_id"] = view_id
-                
+
             try:
                 res = requests.get(url, headers=self.headers, params=params, timeout=20)
                 res.raise_for_status()
                 data = res.json().get("data", {})
-                
+
                 items = data.get("items", [])
                 all_records.extend(items)
-                
+
                 has_more = data.get("has_more", False)
                 page_token = data.get("page_token", "")
             except Exception as e:
                 print(f"[Feishu Error] 获取记录失败: {e}")
                 break
-        
+
         print(f"✅ 成功获取 {len(all_records)} 条记录。")
         return all_records
+
 
 class AdsAnalyzer:
     def __init__(self):
         self.output_dir = config.RESULT_DIR
         self.assets_dir = config.OUTPUT_DIR
         self.api_key = config.DASHSCOPE_API_KEY
-        self.feishu_client = FeishuClient(config.FEISHU_APP_ID, config.FEISHU_APP_SECRET)
-        
+        self.feishu_client = FeishuClient(
+            config.FEISHU_APP_ID, config.FEISHU_APP_SECRET
+        )
+
         if not self.api_key:
             print("[Warning] 环境变量中未找到 DASHSCOPE_API_KEY。")
 
@@ -106,7 +117,7 @@ class AdsAnalyzer:
     def _encode_image(self, image_path: str) -> str:
         """将图像编码为 base64。"""
         with open(image_path, "rb") as image_file:
-            return base64.b64encode(image_file.read()).decode('utf-8')
+            return base64.b64encode(image_file.read()).decode("utf-8")
 
     def _get_system_prompt(self) -> str:
         return """你是一位拥有10年经验的资深短视频广告分析师。请基于我提供的「视频宫格图」、「视频文案」，进行深度分析。
@@ -155,32 +166,37 @@ class AdsAnalyzer:
     "分析": "点击率较高（X%），封面痛点直击人心。消耗较高但转化一般，建议优化落地页引导。"
 }"""
 
-    def _call_qwen_vl(self, image_path: str, text_content: str, performance_data: Dict) -> Optional[Dict]:
+    def _call_qwen_vl(
+        self, image_path: str, text_content: str, performance_data: Dict
+    ) -> Optional[Dict]:
         """调用 Qwen-VL-Plus API。"""
         url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
-        
+
         perf_str = "\n".join([f"{k}: {v}" for k, v in performance_data.items()])
-        
+
         user_content = [
             {"image": f"data:image/jpeg;base64,{self._encode_image(image_path)}"},
-            {"text": f"【视频文案】：\n{text_content}\n\n【投放数据】：\n{perf_str}\n\n请根据上述素材和数据进行分析。"}
+            {
+                "text": f"【视频文案】：\n{text_content}\n\n【投放数据】：\n{perf_str}\n\n请根据上述素材和数据进行分析。"
+            },
         ]
 
         payload = {
-            "model": "qwen-vl-plus",
+            "model": "qwen-vl-max",
             "input": {
                 "messages": [
-                    {"role": "system", "content": [{"text": self._get_system_prompt()}]},
-                    {"role": "user", "content": user_content}
+                    {
+                        "role": "system",
+                        "content": [{"text": self._get_system_prompt()}],
+                    },
+                    {"role": "user", "content": user_content},
                 ]
             },
-            "parameters": {
-                "result_format": "message"
-            }
+            "parameters": {"result_format": "message"},
         }
 
         for attempt in range(3):
@@ -188,58 +204,66 @@ class AdsAnalyzer:
                 response = requests.post(url, headers=headers, json=payload, timeout=60)
                 response.raise_for_status()
                 result = response.json()
-                
+
                 if "output" in result and "choices" in result["output"]:
-                    content = result["output"]["choices"][0]["message"]["content"][0]["text"]
+                    content = result["output"]["choices"][0]["message"]["content"][0][
+                        "text"
+                    ]
                     content = content.replace("```json", "").replace("```", "").strip()
                     return json.loads(content)
                 else:
                     print(f"[API Error] 意外响应: {result}")
-            
+
             except Exception as e:
-                print(f"[API Error] 第 {attempt+1}/3 次尝试失败: {e}")
+                print(f"[API Error] 第 {attempt + 1}/3 次尝试失败: {e}")
                 time.sleep(2)
-        
+
         return None
 
     def _find_assets(self, material_name: str) -> Tuple[Optional[str], Optional[str]]:
         """查找指定素材名称的拼图和字幕文件。"""
         video_dir = self.assets_dir / material_name
+        print(f"[Debug] 搜索目录: {video_dir}")
         # 备选：针对带时间戳的文件夹？未实现，基于原始代码假设完全匹配
-        
+
         if video_dir.exists():
             sheet_path = video_dir / "final_sheet.jpg"
             text_path = video_dir / "transcript_detailed.txt"
-            
+
             if sheet_path.exists() and text_path.exists():
                 return str(sheet_path), str(text_path)
-        
+
         return None, None
 
-    def _fetch_feishu_data(self, app_token: str = None, table_id: str = None) -> List[Dict]:
+    def _fetch_feishu_data(
+        self, app_token: str = None, table_id: str = None
+    ) -> List[Dict]:
         """获取并标准化飞书数据。"""
         target_app_token = app_token
         target_table_id = table_id
 
         if not target_app_token:
             print("[Feishu] 正在从 Wiki Token 解析 App Token...")
-            target_app_token = self.feishu_client.get_app_token_from_wiki(config.WIKI_TOKEN)
-        
+            # target_app_token = self.feishu_client.get_app_token_from_wiki(config.WIKI_TOKEN)
+            target_app_token = config.SOURCE_APP_TOKEN
+
         if not target_app_token:
             print("[Error] 获取 App Token 失败")
             return []
-            
+
         print(f"[Feishu] App Token: {target_app_token}")
         # 如果未提供 table_id，使用配置或获取第一个表
         if not target_table_id:
-             target_table_id = config.ANALYSIS_TABLE_ID
-             
-        records = self.feishu_client.get_all_records(target_app_token, target_table_id, config.ANALYSIS_VIEW_ID)
-        
+            target_table_id = config.ANALYSIS_TABLE_ID
+
+        records = self.feishu_client.get_all_records(
+            target_app_token, target_table_id, config.ANALYSIS_VIEW_ID
+        )
+
         normalized_data = []
         for r in records:
             fields = r.get("fields", {})
-            
+
             # 标准化链接
             url_field = fields.get("视频链接")
             url = ""
@@ -249,7 +273,7 @@ class AdsAnalyzer:
                 url = url_field[0].get("url", "") or url_field[0].get("link", "")
             elif isinstance(url_field, dict):
                 url = url_field.get("url", "") or url_field.get("link", "")
-                
+
             # 标准化来源
             source_field = fields.get("来源", "")
             source = ""
@@ -271,16 +295,18 @@ class AdsAnalyzer:
                 "点击": fields.get("点击", 0),
                 "消耗": fields.get("消耗", 0),
                 "激活人数": fields.get("激活人数", 0),
-                "来源": source
+                "来源": source,
             }
             normalized_data.append(item)
-            
+
         return normalized_data
 
-    def process(self, app_token: str = None, table_id: str = None, progress_callback=None) -> List[Dict]:
+    def process(
+        self, app_token: str = None, table_id: str = None, progress_callback=None
+    ) -> List[Dict]:
         """运行分析并返回结果 (不保存到 Excel)。"""
         data = self._fetch_feishu_data(app_token, table_id)
-        
+
         results = []
         total_rows = len(data)
         print(f"发现 {total_rows} 行待处理数据。")
@@ -288,43 +314,43 @@ class AdsAnalyzer:
             progress_callback(f"🤖 开始 AI 分析，共 {total_rows} 条数据...")
 
         for index, row in enumerate(data):
-            material_name = str(row.get('素材名称', ''))
-            if material_name.lower().endswith('.mp4'):
+            material_name = str(row.get("素材名称", ""))
+            if material_name.lower().endswith(".mp4"):
                 material_name = material_name[:-4]
             material_name = material_name.strip()
 
             if not material_name:
                 continue
-                
-            print(f"\n[{index+1}/{total_rows}] 正在处理: {material_name}")
-            
+
+            print(f"\n[{index + 1}/{total_rows}] 正在处理: {material_name}")
+
             sheet_path, text_path = self._find_assets(material_name)
-            
+
             analysis_result = {}
-            
-            impressions = float(row.get('展现', 0) or 0)
-            clicks = float(row.get('点击', 0) or 0)
-            activations = float(row.get('激活人数', 0) or 0)
-            
+
+            impressions = float(row.get("展现", 0) or 0)
+            clicks = float(row.get("点击", 0) or 0)
+            activations = float(row.get("激活人数", 0) or 0)
+
             ctr = clicks / impressions if impressions > 0 else 0
             cvr = activations / clicks if clicks > 0 else 0
 
             if sheet_path and text_path:
                 print("  发现本地素材。正在调用 AI...")
-                
+
                 try:
-                    with open(text_path, 'r', encoding='utf-8') as f:
+                    with open(text_path, "r", encoding="utf-8") as f:
                         transcript = f.read()
-                    
+
                     perf_data = {
                         "展现": int(impressions),
                         "点击": int(clicks),
-                        "消耗": row.get('消耗', 0),
+                        "消耗": row.get("消耗", 0),
                         "激活人数": int(activations),
                         "点击率": f"{ctr:.2%}",
-                        "转换率": f"{cvr:.2%}"
+                        "转换率": f"{cvr:.2%}",
                     }
-                    
+
                     ai_res = self._call_qwen_vl(sheet_path, transcript, perf_data)
                     if ai_res:
                         analysis_result = ai_res
@@ -332,7 +358,9 @@ class AdsAnalyzer:
                     else:
                         print("  AI 分析失败。")
                         if progress_callback:
-                            progress_callback(f"❌ {material_name}: AI 分析失败 (返回空)")
+                            progress_callback(
+                                f"❌ {material_name}: AI 分析失败 (返回空)"
+                            )
                 except Exception as e:
                     print(f"  AI 分析过程中出错: {e}")
                     if progress_callback:
@@ -347,44 +375,50 @@ class AdsAnalyzer:
                     "场景": "未找到素材",
                     "痛点": "未找到素材",
                     "概述": "未找到素材",
-                    "分析": "未找到素材"
+                    "分析": "未找到素材",
                 }
 
             row_data = {
-                '素材名称': material_name,
-                '视频链接': row.get('视频链接', ''),
-                '缩略图': sheet_path if sheet_path else '', 
-                '人群': analysis_result.get('人群', ''),
-                '功能': analysis_result.get('功能', ''),
-                '场景': analysis_result.get('场景', ''),
-                '痛点': analysis_result.get('痛点', ''),
-                '概述': analysis_result.get('概述', ''),
-                '分析': analysis_result.get('分析', ''),
-                '展现': int(impressions),
-                '点击': int(clicks),
-                '消耗': row.get('消耗', ''),
-                '激活人数': int(activations),
-                '点击率': ctr, 
-                '转换率': cvr, 
-                '来源': row.get('来源', '')
+                "素材名称": material_name,
+                "视频链接": row.get("视频链接", ""),
+                "缩略图": sheet_path if sheet_path else "",
+                "人群": analysis_result.get("人群", ""),
+                "功能": analysis_result.get("功能", ""),
+                "场景": analysis_result.get("场景", ""),
+                "痛点": analysis_result.get("痛点", ""),
+                "概述": analysis_result.get("概述", ""),
+                "分析": analysis_result.get("分析", ""),
+                "展现": int(impressions),
+                "点击": int(clicks),
+                "消耗": row.get("消耗", ""),
+                "激活人数": int(activations),
+                "点击率": ctr,
+                "转换率": cvr,
+                "来源": row.get("来源", ""),
             }
             results.append(row_data)
-            
+
             time.sleep(1)
 
         print(f"分析完成。生成了 {len(results)} 条结果。")
         if progress_callback:
             progress_callback(f"✅ AI 分析全部完成，生成 {len(results)} 条结果。")
+
         return results
 
     # 保留旧方法以兼容 CLI (如果需要)，但在新管线中未使用
     def _save_excel(self, results: List[Dict]):
         pass
 
+
 def run_analyzer():
     print("🚀 开始广告分析...")
     analyzer = AdsAnalyzer()
-    analyzer.process()
+    results = analyzer.process()
+
+    syncer = FeishuSyncer()
+    syncer.sync_data(results)
+
 
 if __name__ == "__main__":
     run_analyzer()

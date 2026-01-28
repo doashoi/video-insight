@@ -1,0 +1,25 @@
+services:
+  video-insight-server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: video-insight-server
+    ports:
+      - "9000:9000"
+    environment:
+      # 请在 .env 文件中配置这些变量
+      - FEISHU_APP_ID=${FEISHU_APP_ID}
+      - FEISHU_APP_SECRET=${FEISHU_APP_SECRET}
+      - FEISHU_VERIFICATION_TOKEN=${FEISHU_VERIFICATION_TOKEN}
+      - FEISHU_ENCRYPT_KEY=${FEISHU_ENCRYPT_KEY}
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+      # 缓存目录映射 (本地开发用)
+      - MODELSCOPE_CACHE=/app/data/modelscope_cache
+    volumes:
+      # 挂载模型目录 (解决构建时 Context 过大问题)
+      - ../models:/app/models
+      # 挂载缓存目录，避免重复下载模型
+      - ./data/modelscope_cache:/app/data/modelscope_cache
+      # 挂载输出目录
+      - ../output:/app/output
+    restart: unless-stopped

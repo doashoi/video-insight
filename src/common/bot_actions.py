@@ -3,27 +3,14 @@ import logging
 import threading
 import re
 import lark_oapi
-from fastapi import FastAPI, Request, BackgroundTasks
-import sys
-from pathlib import Path
-
-# 添加 src 到 sys.path
-sys.path.insert(0, str(Path(__file__).parent / "src"))
-
-from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
 from lark_oapi.api.im.v1.model import P2ImMessageReceiveV1, CreateMessageRequest, CreateMessageRequestBody
 from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTrigger
 
-from video_insight.config import config
-from video_insight.core import run_pipeline_task, TASK_LOCK
+from config import config
+from core import run_pipeline_task, TASK_LOCK
 
 # 设置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("FeishuServer")
-
-app = FastAPI()
-
-# --- 辅助函数 ---
+logger = logging.getLogger("VideoInsightBot")
 
 def send_message(user_id: str, content: str, msg_type: str = "text"):
     """向用户发送消息。"""
@@ -141,8 +128,6 @@ def send_config_card(user_id: str):
     
     send_message(user_id, json.dumps(card_content), "interactive")
 
-# --- 逻辑处理程序 ---
-
 def execute_task(user_id: str, folder_token: str, app_name: str, source_url: str):
     """执行管道任务。"""
     try:
@@ -218,17 +203,6 @@ def handle_card_action(data: P2CardActionTrigger):
 
             send_message(user_id, f"✅ 任务已启动！\n名称: {app_name}\n源: {source_url}\n请耐心等待...")
             
-            # 我们需要在后台运行此任务。
-            # 但是 handle_card_action 被 Dispatcher 同步调用。
-            # 我们可以在这里使用 threading，就像之前一样，因为 EventDispatcherHandler 只是一个函数调用。
-            # 或者：因为我们在 FastAPI 中，如果我们以不同方式调用它，我们可以使用 app 的后台任务。
-            # 但 EventDispatcherHandler 隐藏了请求上下文。
-            # 所以 Threading 仍然是处理程序中“即发即弃”的最简单方法。
-            # 但是，对于 FC，如果进程冻结，Threading 是有风险的。
-            # 但我们使用的是具有“始终开启”或异步调用的“自定义容器”。
-            # 如果使用 FC 异步调用，我们应该触发另一个函数。
-            # 对于 MVP，如果超时时间足够长，Threading 是可以的。
-            
             try:
                 t = threading.Thread(target=execute_task, args=(user_id, folder_token, app_name, source_url))
                 t.start()
@@ -239,56 +213,3 @@ def handle_card_action(data: P2CardActionTrigger):
             
     except Exception as e:
         logger.error(f"Error handling card action: {e}")
-
-# --- 事件处理程序 ---
-# 确保 Token 不为 None
-verification_token = config.FEISHU_VERIFICATION_TOKEN or ""
-encrypt_key = config.FEISHU_ENCRYPT_KEY or ""
-
-event_handler = EventDispatcherHandler.builder(encrypt_key, verification_token) \
-    .register_p2_im_message_receive_v1(handle_message) \
-    .register_p2_card_action_trigger(handle_card_action) \
-    .build()
-
-@app.post("/webhook/event")
-async def webhook_event(request: Request):
-    # 1. 解析请求
-    try:
-        req_body = await request.body()
-        req_dict = json.loads(req_body)
-    except:
-        return {"msg": "invalid json"}
-
-    # 2. 挑战检查 (Challenge Check)
-    if "challenge" in req_dict:
-        return {"challenge": req_dict["challenge"]}
-    
-    # 3. 分发
-    # 手动创建一个 Lark Request 对象
-    # 注意: event_handler.do(req) 期望一个 Lark Request 对象
-    # 我们可以简化: Lark 的 Flask/Django 适配器会做这件事。
-    # 对于 FastAPI，我们可以构建它。
-    
-    headers = dict(request.headers)
-    lark_req = lark_oapi.parse_req(
-        arg=lark_oapi.Request(
-            uri=str(request.url), 
-            headers=headers, 
-            body=req_body
-        )
-    )
-    
-    # 4. 处理
-    lark_resp = event_handler.do(lark_req)
-    
-    # 5. 返回响应
-    return {
-        "code": lark_resp.code,
-        "msg": lark_resp.msg,
-        "data": lark_resp.data
-    }
-
-if __name__ == "__main__":
-    import uvicorn
-    # FC 自定义容器通常监听 9000 端口，或者我们配置它。
-    uvicorn.run(app, host="0.0.0.0", port=9000)

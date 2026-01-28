@@ -19,7 +19,7 @@ from lark_oapi.api.bitable.v1 import (
     CreateAppRequest, ReqApp, ListAppTableRequest
 )
 
-from .config import config
+from config import config
 
 class FeishuSyncer:
     def __init__(self):

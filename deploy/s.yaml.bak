@@ -1,0 +1,38 @@
+edition: 3.0.0
+name: video-insight-app
+access: default
+
+resources:
+  video-insight:
+    component: fc3
+    props:
+      region: cn-hangzhou
+      functionName: bot-server
+      runtime: custom-container
+      handler: index.handler
+      code: ./
+      customContainerConfig:
+        image: crpi-ejvhnaao5o1qzzps.cn-hangzhou.personal.cr.aliyuncs.com/video-insight/video-insight:20260128-v3
+        port: 9000
+      cpu: 4
+      memorySize: 4096
+      diskSize: 512
+      timeout: 600
+      environmentVariables:
+        # 如果挂载了 NAS，改为 /mnt/auto/modelscope
+        MODELSCOPE_CACHE: /tmp/modelscope
+        HF_HOME: /tmp/huggingface
+        # 环境变量引用本地 .env 或 CI/CD 注入
+        FEISHU_APP_ID: ${env(FEISHU_APP_ID)}
+        FEISHU_APP_SECRET: ${env(FEISHU_APP_SECRET)}
+        FEISHU_VERIFICATION_TOKEN: ${env(FEISHU_VERIFICATION_TOKEN)}
+        FEISHU_ENCRYPT_KEY: ${env(FEISHU_ENCRYPT_KEY)}
+        DASHSCOPE_API_KEY: ${env(DASHSCOPE_API_KEY)}
+      triggers:
+        - triggerName: http-trigger
+          triggerType: http
+          triggerConfig:
+            authType: anonymous
+            methods:
+              - GET
+              - POST
