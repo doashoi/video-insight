@@ -14,4 +14,3 @@ numba
 umap-learn
 numpy
 oss2
-pycryptodome
