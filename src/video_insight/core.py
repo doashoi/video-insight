@@ -28,7 +28,7 @@ def resolve_wiki_token(wiki_token: str) -> Tuple[Optional[str], Optional[str]]:
     """
     通过 Wiki Token 解析出对应的 Bitable App Token。
     """
-    print(f"[Core] Resolving wiki token: {wiki_token}")
+    logger.info(f"Resolving wiki token: {wiki_token}")
     client = lark_oapi.Client.builder().app_id(config.FEISHU_APP_ID).app_secret(config.FEISHU_APP_SECRET).build()
     try:
         req = GetNodeSpaceRequest.builder() \
@@ -38,20 +38,17 @@ def resolve_wiki_token(wiki_token: str) -> Tuple[Optional[str], Optional[str]]:
         
         if not resp.success():
             logger.error(f"Failed to resolve wiki token: {resp.msg}")
-            print(f"[Core] Failed to resolve wiki token: {resp.msg}")
             return None, None
             
         node = resp.data.node
         if node.obj_type == "bitable":
-            print(f"[Core] Resolved wiki token to bitable: {node.obj_token}")
+            logger.info(f"Resolved wiki token to bitable: {node.obj_token}")
             return node.obj_token, None # table_id 无法从 wiki token 直接获取，通常默认为第一个表
         else:
             logger.warning(f"Wiki node is not a bitable: {node.obj_type}")
-            print(f"[Core] Wiki node is not a bitable: {node.obj_type}")
             return None, None
     except Exception as e:
         logger.error(f"Error resolving wiki token: {e}")
-        print(f"[Core] Error resolving wiki token: {e}")
         return None, None
 
 def parse_feishu_url(url: str) -> Tuple[Optional[str], Optional[str], str]:
@@ -62,7 +59,6 @@ def parse_feishu_url(url: str) -> Tuple[Optional[str], Optional[str], str]:
     try:
         url = url.strip() # Remove whitespace
         logger.info(f"Parsing URL: {url}")
-        print(f"[Core] Parsing URL: {url}")
         
         # 提取域名
         domain_match = re.search(r"https?://([^/]+)", url)
@@ -153,16 +149,15 @@ def run_pipeline_task(user_id: str, source_url: str, progress_callback=None, tem
         report_progress(f"📋 已定位源表格: {original_name}")
 
         # 设置临时目录
-        # 优先使用配置中定义的 DESKTOP_PATH 或 ROOT_DIR
-        base_path = config.DESKTOP_PATH if config.DESKTOP_PATH and config.DESKTOP_PATH.exists() else config.ROOT_DIR
-        
-        # 在 FC 环境下，强制使用 /tmp 下的子目录以确保可写
+        # 统一使用项目根目录下的子目录，避免污染用户桌面
         if config.IS_FC:
             cache_root_dir = Path("/tmp") / f"task_{user_id}_{int(time.time())}"
         else:
-            cache_root_dir = base_path / f"{safe_name}_缓存"
-        video_download_dir = cache_root_dir / "Data_Analysis_Video_Download"
-        result_dir = cache_root_dir / "Data_Analysis_Result"
+            # 本地环境下使用 .cache 目录
+            cache_root_dir = config.ROOT_DIR / ".cache" / f"task_{user_id}_{int(time.time())}"
+            
+        video_download_dir = cache_root_dir / "downloads"
+        result_dir = cache_root_dir / "results"
         
         # 确保目录存在
         video_download_dir.mkdir(parents=True, exist_ok=True)
