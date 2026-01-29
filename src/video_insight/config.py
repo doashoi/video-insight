@@ -22,23 +22,22 @@ class Config:
         RESULT_DIR = Path("/tmp/video_insight/result")
         DESKTOP_PATH = Path("/tmp") # FC 环境无桌面，指向 tmp
     elif os.name == 'nt':
-        # Windows 本地环境
-        DESKTOP_PATH = Path(os.path.join(os.environ.get("USERPROFILE", ""), "Desktop"))
-        if DESKTOP_PATH.exists():
-            OUTPUT_DIR = DESKTOP_PATH / "Data_Analysis_Video_Download"
-            RESULT_DIR = DESKTOP_PATH / "Data_Analysis_Result"
-        else:
-            OUTPUT_DIR = ROOT_DIR / "Data_Analysis_Video_Download"
-            RESULT_DIR = ROOT_DIR / "result"
+        # Windows 本地环境：为了方便测试查看结果，默认指向桌面
+        # 实际生产运行（云端）会使用 IS_FC 逻辑
+        DESKTOP_PATH = Path(os.path.join(os.environ["USERPROFILE"], "Desktop"))
+        OUTPUT_DIR = DESKTOP_PATH / "Data_Analysis_Video_Download"
+        RESULT_DIR = DESKTOP_PATH / "Data_Analysis_Result"
+        
+        # 本地测试时，如果目录不存在则创建
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        RESULT_DIR.mkdir(parents=True, exist_ok=True)
     else:
         # 其他环境 (如通用 Linux/Docker)
-        OUTPUT_DIR = ROOT_DIR / "Data_Analysis_Video_Download"
-        RESULT_DIR = ROOT_DIR / "result"
+        OUTPUT_DIR = ROOT_DIR / "downloads"
+        RESULT_DIR = ROOT_DIR / "results"
         DESKTOP_PATH = ROOT_DIR
-    
-    # 如果目录不存在则创建
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    RESULT_DIR.mkdir(parents=True, exist_ok=True)
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        RESULT_DIR.mkdir(parents=True, exist_ok=True)
     
     # 飞书应用凭证
     FEISHU_APP_ID = os.getenv("FEISHU_APP_ID")
@@ -70,6 +69,9 @@ class Config:
     
     # 运行时配置
     MAX_WORKERS = 5
+    ANCHOR_START_OFFSET_S = float(os.getenv("ANCHOR_START_OFFSET_S", "0.3"))
+    ANCHOR_END_OFFSET_S = float(os.getenv("ANCHOR_END_OFFSET_S", "0.2"))
+    ANCHOR_LONG_SENTENCE_MIDPOINT = os.getenv("ANCHOR_LONG_SENTENCE_MIDPOINT", "false").strip().lower() in ("1", "true", "yes", "y", "on")
     
     # 任务锁文件路径 (用于跨进程任务同步)
     LOCK_FILE = ROOT_DIR / ".task.lock"
