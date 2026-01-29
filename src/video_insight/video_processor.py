@@ -23,6 +23,7 @@ class VideoAnalyzer:
         """使用配置中的路径初始化 VideoAnalyzer。"""
         self.ffmpeg_exe = config.FFMPEG_PATH
         self.api_key = config.DASHSCOPE_API_KEY
+        self.last_error = None  # 用于记录最近一次发生的具体错误原因
         
         # 注册 FFmpeg 路径
         ffmpeg_dir = os.path.dirname(str(self.ffmpeg_exe))
@@ -72,32 +73,23 @@ class VideoAnalyzer:
             print("[Error] 未配置 DASHSCOPE_API_KEY，无法进行 ASR 识别")
             return None
 
-        # 1. 语音识别 (使用 DashScope Base64 直接提交)
+        # 1. 语音识别 (使用 DashScope Base64 同步提交)
         try:
-            import base64
-            print(f"[ASR] 正在读取音频并进行 Base64 编码...")
-            with open(str(audio_path), "rb") as f:
-                audio_base64 = base64.b64encode(f.read()).decode("utf-8")
-            
-            # 提交 ASR 任务
-            asr_response = self._submit_asr_task(audio_base64)
+            # 提交 ASR 任务，传入音频路径以便内部处理 Base64 和大小检查
+            asr_response = self._submit_asr_task(str(audio_path))
             if not asr_response:
-                print("[Error] ASR 识别失败")
+                print("[Error] ASR 识别流程失败，未能获取有效响应")
                 return None
             
             # 同步返回，直接获取结果
             result_data = asr_response
-            print(f"[ASR] 收到同步返回结果")
+            print(f"[ASR] 成功收到 ASR 同步返回结果")
             
-            if not result_data:
-                return None
-                
             # 2. 解析结果
             results = []
             output = result_data.get("output", {})
             
             # qwen-asr-flash 响应结构解析
-            # 结构通常是: output: { sentences: [...] } 或 output: { text: "..." }
             sentences = output.get("sentences", [])
             
             if not sentences:
@@ -111,20 +103,20 @@ class VideoAnalyzer:
                 print("[ASR Warning] 未获得时间戳信息，使用完整文本作为单一句子")
                 sentences = [{
                     "begin_time": 0,
-                    "end_time": 0, # 这里可能需要视频时长，但目前先设为0
+                    "end_time": 0,
                     "text": output.get("text")
                 }]
             
             for s in sentences:
                 # 记录句子级的时间戳
                 item = {
-                    'start': s.get('begin_time'),
-                    'end': s.get('end_time'),
+                    'start': s.get('begin_time', 0),
+                    'end': s.get('end_time', 0),
                     'text': s.get('text', '').strip(),
-                    'words': [] # 记录词级时间戳用于更精确的截图
+                    'words': [] 
                 }
                 
-                # 尝试获取词级时间戳 (timestamp_alignment_enabled 开启时返回)
+                # 尝试获取词级时间戳
                 words = s.get('words', [])
                 if words:
                     for w in words:
@@ -143,64 +135,108 @@ class VideoAnalyzer:
             return results
 
         except Exception as e:
-            print(f"[Error] ASR 识别失败: {e}")
+            print(f"[Error] analyze_audio 捕获到异常: {e}")
             traceback.print_exc()
             return None
         finally:
-            # 3. 完善资源清理逻辑
+            # 3. 资源清理逻辑
             if temp_audio_dir.exists():
                 try:
                     shutil.rmtree(temp_audio_dir)
-                    print(f"[Cleanup] 已删除临时音频目录: {temp_audio_dir}")
+                    print(f"[Cleanup] 已清理临时音频目录: {temp_audio_dir}")
                 except Exception as e:
                     print(f"[Cleanup Warning] 无法删除临时目录 {temp_audio_dir}: {e}")
             sys.stdout.flush()
 
-    def _submit_asr_task(self, audio_base64: str) -> Optional[Dict]:
-        """提交 ASR 任务（同步接口，支持 qwen-asr-flash）。"""
+    def _submit_asr_task(self, audio_path: str) -> Optional[Dict]:
+        """提交 ASR 任务（同步接口，修复 Base64 格式与大小检查）。"""
+        import base64
         import sys
-        # 切换到官方推荐的同步识别接口
-        url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/asr/sentence-recognition"
+        
+        self.last_error = None # 重置错误状态
+        
+        # 1. 读取并编码音频
+        try:
+            print(f"[ASR] 正在读取音频文件: {audio_path}")
+            with open(audio_path, "rb") as f:
+                audio_data = f.read()
+            file_size_mb = len(audio_data) / (1024 * 1024)
+            print(f"[ASR] 音频文件原始大小: {file_size_mb:.2f} MB")
+            
+            audio_base64 = base64.b64encode(audio_data).decode("utf-8")
+            # Base64 膨胀系数约为 1.33
+            estimated_payload_size = len(audio_base64) / (1024 * 1024)
+            print(f"[ASR] Base64 编码完成，预计 Payload 大小: {estimated_payload_size:.2f} MB")
+            
+            # 2. 检查 Body 大小限制 (FC 同步请求 Body 限制为 32MB)
+            if estimated_payload_size > 31.5: # 预留一点 Buffer
+                self.last_error = f"音频 Payload ({estimated_payload_size:.2f}MB) 超过阿里云同步接口 32MB 限制。建议减小视频时长或压缩音频频率。"
+                print(f"[ASR Error] {self.last_error}")
+                return None
+                
+        except Exception as e:
+            self.last_error = f"读取或编码音频失败: {str(e)}"
+            print(f"[ASR Error] {self.last_error}")
+            return None
+
+        # 3. 构造符合规范的 Payload
+        # 确认使用最新的同步识别接口
+        url = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/flash/invoke"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
-            # 移除 X-DashScope-Async 头，因为这是同步调用
         }
         
-        # 构造符合官方规范的 Payload
+        # 修正：添加正确的 MIME 类型 data:audio/wav;base64,
+        mime_type = "audio/wav" 
+        content_type = f"data:{mime_type};base64,{audio_base64}"
+        
         payload = {
-            "model": "qwen-asr-flash", 
+            "model": "qwen3-asr-flash", 
             "input": {
-                # 关键：添加 data:;base64, 前缀
-                "audio": f"data:;base64,{audio_base64}"
+                "audio": content_type
             },
             "parameters": {
                 "language_hints": ["zh", "en"],
-                "timestamp_alignment_enabled": True # 尝试请求时间戳以适配锚点生成
+                "timestamp_alignment_enabled": True,
+                "punctuation_enabled": True  # 显式开启标点，提高可读性
             }
         }
         
+        # 4. 发送同步请求
         try:
-            print(f"[ASR] 正在提交同步任务 (模型: qwen-asr-flash)...")
+            print(f"[ASR] 正在向接口提交同步请求 (模型: qwen3-asr-flash)...")
+            print(f"[ASR] 目标 URL: {url}")
             sys.stdout.flush()
-            # 增加超时时间以应对 Base64 传输
-            resp = requests.post(url, headers=headers, json=payload, timeout=60)
+            
+            start_time = time.time()
+            resp = requests.post(url, headers=headers, json=payload, timeout=90) # 适当增加超时
+            duration = time.time() - start_time
+            
+            print(f"[ASR] 接口响应耗时: {duration:.2f} 秒")
             
             if resp.status_code != 200:
-                print(f"[ASR Error] 接口调用失败，状态码: {resp.status_code}, 详情: {resp.text}")
-                sys.stdout.flush()
+                self.last_error = f"ASR 接口返回错误 (HTTP {resp.status_code}): {resp.text}"
+                print(f"[ASR Error] {self.last_error}")
                 return None
             
             res = resp.json()
             if "output" in res:
                 return res
-                
-            print(f"[ASR Error] 响应格式未知: {res}")
-            sys.stdout.flush()
-            return None
+            
+            self.last_error = f"ASR 响应结构异常，缺少 output 字段: {str(res)}"
+            print(f"[ASR Error] {self.last_error}")
+        except requests.exceptions.Timeout:
+            self.last_error = "ASR 请求超时 (90s)，Base64 传输或服务端处理过慢。"
+            print(f"[ASR Error] {self.last_error}")
+        except requests.exceptions.ConnectionError as e:
+            self.last_error = f"ASR 连接错误: {str(e)}。可能由于 Body 过大导致连接被重置。"
+            print(f"[ASR Error] {self.last_error}")
         except Exception as e:
-            print(f"[ASR Error] 提交任务失败: {e}")
-            sys.stdout.flush()
+            self.last_error = f"ASR 提交任务发生未知异常: {str(e)}"
+            print(f"[ASR Error] {self.last_error}")
+            traceback.print_exc()
+        
         return None
 
     def _get_anchors(self, results: List[Dict], video_path: str) -> List[float]:
@@ -539,9 +575,15 @@ def process_video_folder(video_folder: Path, output_root: Path, progress_callbac
                     f.write(f"[{item['start']/1000:.2f}s - {item['end']/1000:.2f}s] {item['text']}\n")
             audio_success_count += 1
         else:
-            print(f"[Skip] 未检测到语音或音频失败: {video_name}")
+            # 关键：识别失败，记录详细原因并根据需求中断任务
+            error_detail = analyzer.last_error or "未知原因（可能未检测到语音）"
+            print(f"[ASR Failed] 视频: {video_name}, 原因: {error_detail}")
+            
             if progress_callback:
-                progress_callback(f"⚠️ 音频提取失败: {video_name}")
+                progress_callback(f"❌ 语音上传/识别失败: {video_name}\n原因: {error_detail}")
+            
+            # 抛出异常中断整个任务管线
+            raise Exception(f"语音识别链路中断：{error_detail}")
 
         # 阶段 2: 截图
         if progress_callback:
