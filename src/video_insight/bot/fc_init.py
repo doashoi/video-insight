@@ -1,7 +1,6 @@
 import os
 import time
 import logging
-import oss2
 from pathlib import Path
 
 # 配置日志

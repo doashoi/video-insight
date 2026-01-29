@@ -22,7 +22,12 @@ models/**/am.mvn
 videos/
 output/
 result/
+downloads/
+results/
+.cache/
 Data_Analysis_Video_Download/
+user_folders.json
+.task.lock
 
 # Tools (Windows版ffmpeg不需要提交，Docker会自动安装Linux版)
 ffmpeg_tool/

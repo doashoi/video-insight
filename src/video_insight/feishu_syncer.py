@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 import time
@@ -26,6 +27,8 @@ from lark_oapi.api.bitable.v1 import (
 
 from .config import config
 from .data_store import UserFolderManager
+
+logger = logging.getLogger("FeishuSyncer")
 
 class FeishuSyncer:
     def __init__(self):
@@ -64,12 +67,12 @@ class FeishuSyncer:
                 return resp.data.app.name
             return None
         except Exception as e:
-            print(f"[Feishu Error] 获取应用名称失败: {e}")
+            logger.error(f"获取应用名称失败: {e}")
             return None
 
     def transfer_owner(self, token: str, member_id: str, type: str, member_type: str = "openid") -> bool:
         """转移文档/文件夹所有者。"""
-        print(f"[Feishu] 正在转移 {type} ({token}) 所有权给 {member_id}...")
+        logger.info(f"正在转移 {type} ({token}) 所有权给 {member_id}...")
         try:
             req = TransferOwnerPermissionMemberRequest.builder() \
                 .token(token) \
@@ -87,15 +90,15 @@ class FeishuSyncer:
             if not resp.success():
                 # 如果是因为已经是所有者，则不算失败
                 if "is already owner" in str(resp.msg).lower():
-                    print(f"[Feishu] 目标用户已经是所有者。")
+                    logger.info(f"目标用户已经是所有者。")
                     return True
-                print(f"[Error] 转移所有权失败: {resp.msg} (Code: {resp.code})")
+                logger.error(f"转移所有权失败: {resp.msg} (Code: {resp.code})")
                 return False
             
-            print(f"[Feishu] 所有权转移成功！(保留机器人权限)")
+            logger.info(f"所有权转移成功！(保留机器人权限)")
             return True
         except Exception as e:
-            print(f"[Error] 转移所有权时发生异常: {e}")
+            logger.error(f"转移所有权时发生异常: {e}")
             return False
 
     def search_folder(self, name: str) -> Optional[str]:
@@ -134,10 +137,10 @@ class FeishuSyncer:
                             return item.get("docs_token")
             else:
                 status_code = response.code
-                print(f"[Feishu Search] 请求失败: {response.msg} (Code: {response.code}, HTTP: {status_code})")
+                logger.error(f"请求失败: {response.msg} (Code: {response.code}, HTTP: {status_code})")
             return None
         except Exception as e:
-            print(f"[Feishu] 搜索文件夹异常: {e}")
+            logger.error(f"搜索文件夹异常: {e}")
             return None
 
     def get_root_folder_by_name(self, name: str) -> Optional[str]:
@@ -161,12 +164,12 @@ class FeishuSyncer:
                             return file.token
             return None
         except Exception as e:
-            print(f"[Feishu] 搜索文件夹异常: {e}")
+            logger.error(f"搜索文件夹异常: {e}")
             return None
 
     def get_or_create_folder(self, folder_name: str, user_id: str = None) -> Optional[str]:
         """查找或创建文件夹。支持跨全域搜索、所有权转移以及自动清理冗余逻辑。"""
-        print(f"[Feishu] 正在定位文件夹: {folder_name} ...")
+        logger.info(f"正在定位文件夹: {folder_name} ...")
         
         try:
             token = None
@@ -179,9 +182,9 @@ class FeishuSyncer:
                     try:
                         check_req = ListFileRequest.builder().folder_token(token).build()
                         if self.client.drive.v1.file.list(check_req).success():
-                            print(f"[Feishu] 命中缓存有效文件夹 Token: {token}")
+                            logger.info(f"命中缓存有效文件夹 Token: {token}")
                         else:
-                            print(f"[Feishu] 缓存的 Token 已失效或无权限，尝试重新查找。")
+                            logger.info(f"缓存的 Token 已失效或无权限，尝试重新查找。")
                             token = None
                     except Exception:
                         token = None
@@ -190,11 +193,11 @@ class FeishuSyncer:
             if not token:
                 token = self.get_root_folder_by_name(folder_name)
                 if token:
-                    print(f"[Feishu] 搜索到匹配文件夹 Token: {token}")
+                    logger.info(f"搜索到匹配文件夹 Token: {token}")
             
             # 3. 如果仍未找到，创建新文件夹
             if not token:
-                print(f"[Feishu] 未发现已有文件夹，正在创建新文件夹: {folder_name} ...")
+                logger.info(f"未发现已有文件夹，正在创建新文件夹: {folder_name} ...")
                 req = CreateFolderFileRequest.builder() \
                     .request_body(CreateFolderFileRequestBody.builder()
                         .name(folder_name)
@@ -205,9 +208,9 @@ class FeishuSyncer:
                 resp = self.client.drive.v1.file.create_folder(req)
                 if resp.success() and resp.data:
                     token = resp.data.token
-                    print(f"[Feishu] 新文件夹创建成功: {token}")
+                    logger.info(f"新文件夹创建成功: {token}")
                 else:
-                    print(f"[Error] 创建文件夹失败: {resp.msg}")
+                    logger.error(f"创建文件夹失败: {resp.msg}")
                     return None
 
             # 4. 处理所有权与权限 (确保文件夹最终在用户“我的文件夹”中)
@@ -217,7 +220,7 @@ class FeishuSyncer:
                 
                 # 检查所有权转移 (如果是机器人拥有的，则转移)
                 # 注意：如果 search 到了用户拥有的文件夹，transfer_owner 会报错（不是所有者），忽略即可
-                print(f"[Feishu] 正在确保文件夹所有权属于用户...")
+                logger.info(f"正在确保文件夹所有权属于用户...")
                 
                 # A. 先给用户加管理权限 (转移前提)
                 self.add_member_permission(token, user_id, "folder", role="full_access")
@@ -228,22 +231,20 @@ class FeishuSyncer:
                 transfer_success = self.transfer_owner(token, user_id, "folder")
                 
                 if transfer_success:
-                    print(f"[Feishu] 文件夹已转移给用户。")
+                    logger.info(f"文件夹已转移给用户。")
                 else:
                     # 如果失败，可能是因为用户已经是所有者了，这是我们想要的结果
-                    print(f"[Feishu] 文件夹已由用户拥有或无需转移。")
+                    logger.info(f"文件夹已由用户拥有或无需转移。")
             
             return token
         
         except Exception as e:
-            print(f"[Error] 查找/创建文件夹时发生异常: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"查找/创建文件夹时发生异常: {e}")
             return None
 
     def create_bitable(self, name: str, folder_token: str, user_id: str = None) -> Optional[str]:
         """创建一个新的多维表格应用并返回其 App Token。"""
-        print(f"[Feishu] 正在文件夹 {folder_token} 中创建多维表格应用: {name} ...")
+        logger.info(f"正在文件夹 {folder_token} 中创建多维表格应用: {name} ...")
         try:
             # 使用多维表格 API 创建应用
             req = CreateAppRequest.builder() \
@@ -255,12 +256,12 @@ class FeishuSyncer:
             
             resp = self.client.bitable.v1.app.create(req)
             if not resp.success() or not resp.data or not resp.data.app:
-                print(f"[Error] 创建多维表格失败: {resp.msg} (code: {resp.code})")
+                logger.error(f"创建多维表格失败: {resp.msg} (code: {resp.code})")
                 return None
             
             # 响应数据结构: resp.data.app.app_token
             app_token = resp.data.app.app_token
-            print(f"[Feishu] 已创建多维表格 App Token: {app_token}")
+            logger.info(f"已创建多维表格 App Token: {app_token}")
             
             # 转移所有权
             if user_id:
@@ -268,12 +269,12 @@ class FeishuSyncer:
                 
             return app_token
         except Exception as e:
-            print(f"[Error] 创建多维表格时发生异常: {e}")
+            logger.error(f"创建多维表格时发生异常: {e}")
             return None
 
     def copy_bitable(self, source_app_token: str, name: str, folder_token: str, user_id: str = None) -> Optional[str]:
         """复制多维表格应用（仅结构），并转移所有权。"""
-        print(f"[Feishu] 正在复制应用 {source_app_token} 到文件夹 {folder_token} (名称: {name}) ...")
+        logger.info(f"正在复制应用 {source_app_token} 到文件夹 {folder_token} (名称: {name}) ...")
         try:
             req = CopyAppRequest.builder() \
                 .app_token(source_app_token) \
@@ -286,7 +287,7 @@ class FeishuSyncer:
             
             resp = self.client.bitable.v1.app.copy(req)
             if not resp.success() or not resp.data or not resp.data.app:
-                print(f"[Error] 复制多维表格失败: {resp.msg} (code: {resp.code})")
+                logger.error(f"复制多维表格失败: {resp.msg} (code: {resp.code})")
                 
                 if resp.code == 1254701:
                     self.last_error = "权限不足 (1254701)。请检查：\n1. 机器人是否拥有源表格的「可阅读」权限；\n2. 机器人是否拥有目标文件夹（'自动分析'）的「可编辑」权限。\n如果文件夹已存在但机器人无权限，请在云文档中找到该文件夹并给机器人添加「可编辑」权限。"
@@ -296,7 +297,7 @@ class FeishuSyncer:
                 return None
             
             app_token = resp.data.app.app_token
-            print(f"[Feishu] 已复制多维表格 App Token: {app_token}")
+            logger.info(f"已复制多维表格 App Token: {app_token}")
             
             # 转移所有权
             if user_id:
@@ -304,12 +305,12 @@ class FeishuSyncer:
                 
             return app_token
         except Exception as e:
-            print(f"[Error] 复制多维表格时发生异常: {e}")
+            logger.error(f"复制多维表格时发生异常: {e}")
             return None
 
     def add_member_permission(self, token: str, member_id: str, type: str = "bitable", role: str = "full_access", member_type: str = "openid") -> bool:
         """为用户或应用添加协作者权限。默认添加为管理员 (full_access)。"""
-        print(f"[Feishu] 正在为 {member_type} {member_id} 添加 {type} 的 {role} 权限...")
+        logger.info(f"正在为 {member_type} {member_id} 添加 {type} 的 {role} 权限...")
         try:
             req = CreatePermissionMemberRequest.builder() \
                 .token(token) \
@@ -326,25 +327,25 @@ class FeishuSyncer:
             if not resp.success():
                 # 如果已经是协作者，API 会报错，这种情况忽略
                 if "already exists" in str(resp.msg).lower() or resp.code == 106212 or resp.code == 1063003:
-                    print(f"[Feishu] 该成员已拥有权限或操作已忽略 (Code: {resp.code})。")
+                    logger.info(f"该成员已拥有权限或操作已忽略 (Code: {resp.code})。")
                     return True
-                print(f"[Error] 添加权限失败: {resp.msg} (Code: {resp.code})")
+                logger.error(f"添加权限失败: {resp.msg} (Code: {resp.code})")
                 return False
                 
-            print(f"[Feishu] 权限添加成功。")
+            logger.info(f"权限添加成功。")
             return True
         except Exception as e:
-            print(f"[Error] 添加权限时发生异常: {e}")
+            logger.error(f"添加权限时发生异常: {e}")
             return False
 
     def init_table_fields(self, app_token: str, table_id: str) -> bool:
         """初始化默认表的字段。如果字段已存在(或有对应别名)则跳过。"""
-        print(f"[Feishu] 正在初始化 Table ID: {table_id} 的字段...")
+        logger.info(f"正在初始化 Table ID: {table_id} 的字段...")
         
         # 1. 获取现有字段，避免重复创建报错
         existing_fields = self.get_table_field_types(app_token, table_id)
         if existing_fields:
-            print(f"[Feishu] 检测到已有 {len(existing_fields)} 个字段，将执行增量更新。")
+            logger.info(f"检测到已有 {len(existing_fields)} 个字段，将执行增量更新。")
         
         # 字段定义
         # 类型 ID: 1=文本, 2=数字, 3=单选, 15=超链接, 17=附件
@@ -372,12 +373,12 @@ class FeishuSyncer:
             if field["name"] in existing_fields:
                 continue
                 
-            # 检查别名是否存在
+            # 别名匹配
             alias_found = False
             if field["name"] in self.FIELD_ALIASES:
                 for alias in self.FIELD_ALIASES[field["name"]]:
                     if alias in existing_fields:
-                        print(f"[Feishu] 字段 '{field['name']}' 已通过别名 '{alias}' 匹配，跳过创建。")
+                        logger.info(f"字段 '{field['name']}' 已通过别名 '{alias}' 匹配，跳过创建。")
                         alias_found = True
                         break
             if alias_found:
@@ -403,12 +404,12 @@ class FeishuSyncer:
                 resp = self.client.bitable.v1.app_table_field.create(req)
                 if not resp.success():
                     # 检查字段是否已存在 (如果表不为空这很常见)
-                    print(f"[Warning] 创建字段 '{field['name']}' 失败: {resp.msg}")
+                    logger.warning(f"创建字段 '{field['name']}' 失败: {resp.msg}")
                 else:
-                    print(f"[Feishu] 已创建字段: {field['name']}")
+                    logger.info(f"已创建字段: {field['name']}")
                     
             except Exception as e:
-                print(f"[Error] 创建字段 '{field['name']}' 时发生异常: {e}")
+                logger.error(f"创建字段 '{field['name']}' 时发生异常: {e}")
         
         return True
 
@@ -438,7 +439,7 @@ class FeishuSyncer:
                     field_types[field.field_name] = field.type
             return field_types
         except Exception as e:
-            print(f"[Warning] 获取字段类型失败: {e}")
+            logger.warning(f"获取字段类型失败: {e}")
             return {}
 
     def _upload_image(self, file_path: str, app_token: str) -> Optional[str]:
@@ -466,10 +467,10 @@ class FeishuSyncer:
             if response.code == 0:
                 return response.data.file_token
             else:
-                print(f"[Warning] 图片上传失败 ({path.name}): {response.msg}")
+                logger.warning(f"图片上传失败 ({path.name}): {response.msg}")
                 return None
         except Exception as e:
-            print(f"[Error] 图片上传错误 ({path.name}): {e}")
+            logger.error(f"图片上传错误 ({path.name}): {e}")
             return None
 
     def _safe_number(self, value: Any) -> Optional[float]:
@@ -564,17 +565,17 @@ class FeishuSyncer:
         target_table_id = table_id if table_id else self.table_id
         
         if not data:
-            print("[Sync] 没有数据需要同步。")
+            logger.info("没有数据需要同步。")
             return
 
-        print(f"\n🚀 开始同步到飞书...")
-        print(f"   App Token: {target_app_token}")
-        print(f"   Table ID: {target_table_id}")
+        logger.info("开始同步到飞书...")
+        logger.info(f"App Token: {target_app_token}")
+        logger.info(f"Table ID: {target_table_id}")
         
         # 获取字段类型以处理多选字段
         field_types = self.get_table_field_types(target_app_token, target_table_id)
         if field_types:
-            print(f"   已获取 {len(field_types)} 个字段的类型定义")
+            logger.info(f"已获取 {len(field_types)} 个字段的类型定义")
         
         success = 0
         fail = 0
@@ -598,13 +599,13 @@ class FeishuSyncer:
                     success += 1
                 else:
                     fail += 1
-                    tqdm.write(f"❌ 第 {idx+1} 行失败: {resp.msg} (Code: {resp.code})")
+                    logger.error(f"第 {idx+1} 行失败: {resp.msg} (Code: {resp.code})")
                 
                 # 速率限制
                 time.sleep(0.2)
                 
             except Exception as e:
                 fail += 1
-                tqdm.write(f"💥 第 {idx+1} 行错误: {e}")
+                logger.error(f"第 {idx+1} 行错误: {e}")
 
-        print(f"\n✅ 同步完成! 成功: {success} | 失败: {fail}")
+        logger.info(f"同步完成! 成功: {success} | 失败: {fail}")

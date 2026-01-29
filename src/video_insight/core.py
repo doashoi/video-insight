@@ -235,7 +235,7 @@ def run_pipeline_task(user_id: str, source_url: str, progress_callback=None, tem
         
     except Exception as e:
         logger.error(f"Pipeline failed: {e}")
-        traceback.print_exc()
+        logger.error(traceback.format_exc())
         # 出错时也尝试清理
         if cache_root_dir and cache_root_dir.exists():
              shutil.rmtree(cache_root_dir, ignore_errors=True)
