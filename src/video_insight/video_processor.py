@@ -153,45 +153,56 @@ class VideoAnalyzer:
             sys.stdout.flush()
 
     def _submit_asr_task(self, audio_path: str) -> Optional[Dict]:
-        """提交 ASR 任务（使用 OpenAI 兼容接口，解决 URL Error 和 Base64 限制）。"""
+        """提交 ASR 任务（使用 OpenAI 兼容 Chat 接口，支持时间戳和 Base64）。"""
         import sys
+        import base64
         
         self.last_error = None # 重置错误状态
         
-        # 1. 构造 OpenAI 兼容接口请求
-        # 官方文档：DashScope 兼容 OpenAI 接口
-        # URL: https://dashscope.aliyuncs.com/compatible-mode/v1/audio/transcriptions
-        url = "https://dashscope.aliyuncs.com/compatible-mode/v1/audio/transcriptions"
+        # 1. 构造 OpenAI 兼容 Chat 接口请求 (官方推荐 qwen3-asr-flash 的新方式)
+        # 根据官方 ASR OpenAI 兼容性文档：https://help.aliyun.com/zh/model-studio/qwen-asr-api-reference
+        url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
         
         headers = {
-            "Authorization": f"Bearer {self.api_key}"
-            # 注意：使用 multipart/form-data 时不要设置 Content-Type，requests 会自动处理边界
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
         }
         
         try:
-            print(f"[ASR] 正在读取音频文件: {audio_path}")
-            print(f"[ASR] 正在向 OpenAI 兼容接口提交请求 (模型: qwen3-asr-flash)...")
+            print(f"[ASR] 正在读取音频文件并编码: {audio_path}")
+            with open(audio_path, "rb") as f:
+                audio_b64 = base64.b64encode(f.read()).decode("utf-8")
+            
+            # 自动检测 MIME 类型
+            mime_type = "audio/mpeg" if audio_path.endswith(".mp3") else "audio/wav"
+            
+            payload = {
+                "model": "qwen3-asr-flash",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_audio",
+                                "input_audio": {
+                                    "data": f"data:{mime_type};base64,{audio_b64}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                "asr_options": {
+                    "enable_timestamp": True,
+                    "enable_word_timestamp": True
+                }
+            }
+            
+            print(f"[ASR] 正在向 OpenAI 兼容 Chat 接口提交请求 (模型: qwen3-asr-flash)...")
             print(f"[ASR] 目标 URL: {url}")
             sys.stdout.flush()
             
             start_time = time.time()
-            
-            with open(audio_path, "rb") as f:
-                # 构造 multipart/form-data
-                # file 字段直接上传文件对象
-                files = {
-                    "file": (os.path.basename(audio_path), f, "audio/mpeg") # 假设是 MP3，如果是 WAV 可改为 audio/wav，但通常不敏感
-                }
-                
-                # 其他参数作为 data 传入
-                data = {
-                    "model": "qwen3-asr-flash",
-                    "response_format": "verbose_json", # 获取详细信息（包含时间戳）
-                    "timestamp_granularities[]": "word" # 尝试请求词级时间戳（如果模型支持）
-                }
-                
-                resp = requests.post(url, headers=headers, files=files, data=data, timeout=120) # 文件上传可能较慢，增加超时
-            
+            resp = requests.post(url, headers=headers, json=payload, timeout=120)
             duration = time.time() - start_time
             print(f"[ASR] 接口响应耗时: {duration:.2f} 秒")
             
@@ -200,42 +211,49 @@ class VideoAnalyzer:
                 print(f"[ASR Error] {self.last_error}")
                 return None
             
-            # OpenAI 格式响应: { "text": "...", "words": [...], "segments": [...] }
-            # 为了兼容 analyze_audio 的后续解析逻辑，我们需要将响应包装成原有 DashScope 格式
-            # 原格式: { "output": { "sentences": [...] } }
+            # 解析响应
+            res_data = resp.json()
+            message = res_data.get("choices", [{}])[0].get("message", {})
             
-            openai_res = resp.json()
+            # 提取转写文本
+            full_text = message.get("content", "").strip()
             
-            # 转换逻辑
+            # 提取结构化 ASR 结果 (包含时间戳)
+            # 根据文档，asr_result 存放在 message 对象中
+            asr_result = message.get("asr_result", {})
             sentences = []
             
-            # 优先使用 segments (OpenAI 标准)
-            if "segments" in openai_res:
-                for seg in openai_res["segments"]:
+            if "sentences" in asr_result:
+                for seg in asr_result["sentences"]:
                     sentences.append({
-                        "begin_time": int(seg.get("start", 0) * 1000),
-                        "end_time": int(seg.get("end", 0) * 1000),
+                        "begin_time": seg.get("begin_time", 0), # 毫秒
+                        "end_time": seg.get("end_time", 0),     # 毫秒
                         "text": seg.get("text", "").strip(),
-                        "words": [] # TODO: 如果 verbose_json 返回了 words，可以尝试映射
+                        "words": seg.get("words", [])           # 词级时间戳
                     })
-            # 如果没有 segments 但有 words (OpenAI 格式有时直接返回 words)
-            elif "words" in openai_res:
-                 # 这里简化处理，如果没有 segments，可能需要自己根据 words 聚合，或者直接作为一大句
-                 # 暂时简单处理：如果没有 segments，就用 text
-                 pass
+            else:
+                # 如果没有 asr_result，尝试作为一整句处理
+                print("[ASR Warning] 未在响应中找到 asr_result 时间戳信息。")
+                if full_text:
+                    sentences.append({
+                        "begin_time": 0,
+                        "end_time": 0, # 无法确定结束时间
+                        "text": full_text,
+                        "words": []
+                    })
             
             # 构造兼容的返回结构
             compatible_res = {
                 "output": {
                     "sentences": sentences,
-                    "text": openai_res.get("text", "")
+                    "text": full_text
                 }
             }
             
             return compatible_res
             
         except requests.exceptions.Timeout:
-            self.last_error = "ASR 请求超时 (120s)，文件上传或处理过慢。"
+            self.last_error = "ASR 请求超时 (120s)。"
             print(f"[ASR Error] {self.last_error}")
         except requests.exceptions.ConnectionError as e:
             self.last_error = f"ASR 连接错误: {str(e)}。"
@@ -243,6 +261,7 @@ class VideoAnalyzer:
         except Exception as e:
             self.last_error = f"ASR 提交任务发生未知异常: {str(e)}"
             print(f"[ASR Error] {self.last_error}")
+            import traceback
             traceback.print_exc()
         
         return None
