@@ -16,18 +16,11 @@ from lark_oapi.core.model import BaseRequest
 from lark_oapi.api.drive.v1 import (
     UploadAllMediaRequest, UploadAllMediaRequestBody, 
     CreatePermissionMemberRequest, BaseMember, ListFileRequest, CreateFolderFileRequest, CreateFolderFileRequestBody, File,
-    TransferOwnerPermissionMemberRequest, Owner, GetFileRequest
+    TransferOwnerPermissionMemberRequest, Owner
 )
 from lark_oapi.api.im.v1.model import GetMessageResourceRequest
 from lark_oapi.api.sheets.v3.model import (
-    Spreadsheet, CreateSpreadsheetRequest,
-    UpdateSpreadsheetPropertiesRequest, SpreadsheetProperties,
-    BatchUpdateSpreadsheetLevelRequest,
-    UpdateSheetRequest, Sheet,
-    BatchUpdateSheetRequest,
-    UpdateSheetPropertiesRequest, SheetProperties,
-    GridData, RowData, CellData, TextRun, CellValue,
-    UpdateGridDataRequest
+    Spreadsheet, CreateSpreadsheetRequest
 )
 from lark_oapi.api.bitable.v1 import (
     CreateAppTableRecordRequest, 
@@ -297,12 +290,7 @@ class FeishuSyncer:
             spreadsheet_token = resp.data.spreadsheet.spreadsheet_token
             spreadsheet_url = resp.data.spreadsheet.url
             
-            # 3. 写入数据
-            # 获取第一张工作表 ID
-            sheet_resp = self.client.sheets.v3.spreadsheet.get(resp.data.spreadsheet.spreadsheet_token)
-            sheet_id = resp.data.spreadsheet.sheets[0].sheet_id
-            
-            # 准备表头和数据
+            # 3. 准备数据矩阵
             # 收集所有片段类型
             all_categories = set()
             for ph_name, categories in data.items():
@@ -315,44 +303,64 @@ class FeishuSyncer:
             for cat in sorted_categories:
                 headers.extend([f"{cat} (竖)", f"{cat} (横)", f"{cat} (方)"])
             
-            rows = []
-            # 添加表头行
-            header_row = RowData.builder().values([
-                CellData.builder().user_entered_value(CellValue.builder().string_value(h).build()).build()
-                for h in headers
-            ]).build()
-            rows.append(header_row)
+            value_matrix = [headers]
             
             # 添加数据行
             for ph_name, categories in data.items():
-                row_values = [CellData.builder().user_entered_value(CellValue.builder().string_value(ph_name).build()).build()]
+                row = [ph_name]
                 for cat in sorted_categories:
                     cat_data = categories.get(cat, {})
                     for orient in ["竖", "横", "方"]:
                         cid_text = cat_data.get(orient, "")
-                        row_values.append(CellData.builder().user_entered_value(CellValue.builder().string_value(cid_text).build()).build())
-                rows.append(RowData.builder().values(row_values).build())
+                        row.append(cid_text)
+                value_matrix.append(row)
 
-            # 更新表格内容
-            update_req = UpdateGridDataRequest.builder() \
-                .spreadsheet_token(spreadsheet_token) \
-                .request_body(GridData.builder()
-                    .sheet_id(sheet_id)
-                    .start_row(0)
-                    .start_column(0)
-                    .rows(rows)
-                    .build()) \
+            # 4. 使用 v2 Values API 写入数据 (兼容性最强)
+            # 获取第一张工作表的 ID (通常是创建后的默认表)
+            # v3 创建的表格默认第一张表 ID 可以在 resp.data.spreadsheet.sheets[0].sheet_id 获取
+            sheet_id = resp.data.spreadsheet.sheets[0].sheet_id
+            
+            # 构造范围，例如 "sheet_id!A1:D10"
+            # 注意：v2 API 支持使用 sheet_id
+            range_str = f"{sheet_id}!A1" # 起始位置
+            
+            import json
+            from lark_oapi.core.model import RequestOption
+            from lark_oapi.core.const import CONTENT_TYPE, APPLICATION_JSON, AUTHORIZATION
+            from lark_oapi.core.token import TokenManager
+
+            write_req = BaseRequest.builder() \
+                .http_method(HttpMethod.PUT) \
+                .uri(f"/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values") \
+                .token_types({AccessTokenType.TENANT}) \
+                .body({
+                    "valueRange": {
+                        "range": range_str,
+                        "values": value_matrix
+                    }
+                }) \
                 .build()
             
-            self.client.sheets.v3.spreadsheet.update_grid_data(update_req)
+            # 获取 Token 并发送请求
+            tm = TokenManager(self.client._config)
+            token = tm.get_tenant_access_token()
             
-            # 4. 转移所有权给用户
+            option = RequestOption()
+            option.headers[CONTENT_TYPE] = f"{APPLICATION_JSON}; charset=utf-8"
+            option.headers[AUTHORIZATION] = f"Bearer {token}"
+            
+            write_resp = self.client.request(write_req, option)
+            
+            if write_resp.code != 0:
+                logger.error(f"写入表格数据失败: {write_resp.msg} (Code: {write_resp.code})")
+            
+            # 5. 转移所有权给用户
             if user_id:
                 self.transfer_owner(spreadsheet_token, user_id, "sheet")
             
             return spreadsheet_url
         except Exception as e:
-            logger.error(f"创建 CID 报表异常: {e}")
+            logger.error(f"创建 CID 报表异常: {e}", exc_info=True)
             return None
 
     def get_or_create_folder(self, folder_name: str, user_id: str = None) -> Optional[str]:
