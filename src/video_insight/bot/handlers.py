@@ -10,6 +10,7 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTr
 
 from video_insight.config import config
 from video_insight.core import run_pipeline_task, TASK_LOCK
+from video_insight.cid_processor import CIDProcessor
 
 logger = logging.getLogger("BotHandlers")
 
@@ -37,6 +38,8 @@ _client = lark_oapi.Client.builder() \
     .domain("https://open.feishu.cn") \
     .log_level(lark_oapi.LogLevel.DEBUG) \
     .build()
+
+_cid_processor = CIDProcessor(_client)
 
 def send_message(user_id: str, content: str, msg_type: str = "text"):
     """向用户发送消息。"""
@@ -186,16 +189,12 @@ def execute_task(user_id: str, source_url: str, template_url: str = None):
             logger.info("Task lock released.")
 
 def handle_message(data: P2ImMessageReceiveV1):
-    """处理传入的文本消息。"""
+    """处理传入的消息。"""
     try:
         # 记录收到的原始事件类型和基本信息
         msg_id = data.event.message.message_id
-        logger.info(f"Received message event. ID: {msg_id}")
-
-        # 只处理文本消息
-        if data.event.message.message_type != "text":
-            logger.info(f"Ignoring non-text message: {data.event.message.message_type}")
-            return {}
+        msg_type = data.event.message.message_type
+        logger.info(f"Received message event. ID: {msg_id}, Type: {msg_type}")
 
         # 获取用户信息，增加安全性检查
         if not data.event.sender or not data.event.sender.sender_id:
@@ -207,37 +206,94 @@ def handle_message(data: P2ImMessageReceiveV1):
             logger.warning("Could not extract open_id from sender info.")
             return {}
 
-        content_str = data.event.message.content
-        if not content_str:
-            return {}
+        # 1. 处理文本消息
+        if msg_type == "text":
+            content_str = data.event.message.content
+            if not content_str:
+                return {}
+                
+            content = json.loads(content_str)
+            text = content.get("text", "").strip()
             
-        content = json.loads(content_str)
-        text = content.get("text", "").strip()
-        
-        # 记录收到的消息内容
-        logger.info(f"Message from {user_id}: {text}")
-        
-        # 1. 检查关键词
-        # 允许简单的 "ping" 用于测试连通性
-        if text.lower() == "ping":
-            send_message(user_id, "pong")
-            return {}
-
-        keywords = ["分析", "start", "menu", "开始", "菜单"]
-        if any(keyword in text.lower() for keyword in keywords):
-            send_config_card(user_id)
-            return {}
-
-        # 2. 如果任务正在运行，且用户发送的不是指令，则保持沉默
-        if TASK_LOCK.locked():
-            logger.info(f"Task is running, ignoring message from {user_id}")
-            return {}
-
-        # 3. 只有当用户发送的是明显的文字输入时，才回复提示
-        if text and len(text) > 0 and not text.startswith("{"):
-            send_message(user_id, "输入 '分析' 或 'Start' 开启配置面板。")
+            # 记录收到的消息内容
+            logger.info(f"Message from {user_id}: {text}")
             
-        return {}
+            # 允许简单的 "ping" 用于测试连通性
+            if text.lower() == "ping":
+                send_message(user_id, "pong")
+                return {}
+
+            # CID 提取指令
+            if text.upper() == "CID":
+                send_message(user_id, "📋 请发送包含 'CID' 和 '尺寸' 列的 Excel 或 CSV 文件，我将为您自动提取并整理。")
+                return {}
+
+            keywords = ["分析", "start", "menu", "开始", "菜单"]
+            if any(keyword in text.lower() for keyword in keywords):
+                send_config_card(user_id)
+                return {}
+
+            # 如果任务正在运行，且用户发送的不是指令，则保持沉默
+            if TASK_LOCK.locked():
+                logger.info(f"Task is running, ignoring message from {user_id}")
+                return {}
+
+            # 只有当用户发送的是明显的文字输入时，才回复提示
+            if text and len(text) > 0 and not text.startswith("{"):
+                send_message(user_id, "输入 '分析' 开启配置面板，或发送 'CID' 开启 CID 提取功能。")
+                
+            return {}
+
+        # 2. 处理文件消息
+        elif msg_type == "file":
+            content_str = data.event.message.content
+            content = json.loads(content_str)
+            file_key = content.get("file_key")
+            file_name = content.get("file_name", "unknown_file")
+            
+            if not file_key:
+                logger.warning("File message without file_key")
+                return {}
+            
+            # 检查扩展名
+            ext = os.path.splitext(file_name)[1].lower()
+            if ext not in [".xlsx", ".xls", ".csv"]:
+                # 如果不是表格文件，可能不是给 CID 功能的，保持沉默或轻微提示
+                logger.info(f"Received non-table file: {file_name}")
+                return {}
+            
+            send_message(user_id, f"📥 收到文件: {file_name}，正在解析中，请稍候...")
+            
+            # 云端临时目录处理
+            temp_dir = "/tmp" if config.IS_FC else "temp"
+            os.makedirs(temp_dir, exist_ok=True)
+            temp_path = os.path.join(temp_dir, f"{msg_id}{ext}")
+            
+            try:
+                # 下载并处理
+                if _cid_processor.download_file(msg_id, file_key, temp_path):
+                    data_map = _cid_processor.process_file(temp_path)
+                    if not data_map:
+                        send_message(user_id, "❌ 文件解析失败，请确保文件中包含 'CID' 和 '尺寸' 列。")
+                    else:
+                        report_url = _cid_processor.create_report(data_map, user_id)
+                        if report_url:
+                            send_message(user_id, f"✅ CID 提取完成！\n请查看整理后的表格：\n{report_url}")
+                        else:
+                            send_message(user_id, "❌ 创建飞书表格失败，请稍后重试。")
+                else:
+                    send_message(user_id, "❌ 文件下载失败。")
+            finally:
+                # 清理临时文件
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                    logger.info(f"Cleaned up temp file: {temp_path}")
+            
+            return {}
+
+        else:
+            logger.info(f"Ignoring message type: {msg_type}")
+            return {}
             
     except Exception as e:
         logger.error(f"Error in handle_message: {e}", exc_info=True)

@@ -13,6 +13,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 from .config import config
+from .prompt_loader import prompt_loader
 
 logger = logging.getLogger("AIAnalyzer")
 
@@ -111,73 +112,23 @@ class AdsAnalyzer:
         with open(image_path, "rb") as image_file:
             return base64.b64encode(image_file.read()).decode('utf-8')
 
-    def _get_system_prompt(self) -> str:
-        return """你是一位拥有10年经验的资深短视频广告分析师。请基于我提供的「视频宫格图」、「视频文案」，进行深度分析。
-
-请严格遵守以下分析维度和约束条件：
-
-1. **受众人群 (Audience)**：
-   - 必须基于视频内容精准定位，并映射到以下标准分类词中（优先选择最具体的一个）：
-   - 分类词库：[年轻女性, 年轻人, 职场白领, 通用, 健身人群, 情侣, 老人, 儿童, 家长, 学生, 宝妈]
-   - 规则：定位到具体人群，例如如果分析结果是20-30岁女性，必须输出“年轻女性”，而不是“年轻人”。
-
-2. **核心功能 (Function)**：
-   - 识别视频推广的核心卖点，并映射到以下标准分类词（若涉及多个，优先选择最核心的一个，仅在无法区分主次时选择“综合卖点”）：
-   - 分类词库：[月暖暖, 饮食健康小助手, 健康小目标, 心理健康自测, 流感健康攻略, 药管家, 健康档案, 问答, 口腔小助理, 中医养生, 综合卖点, AI解读智能报告]
-
-3. **核心痛点 (Pain Point)**：
-   - 结合文案和画面，总结用户面临的具体问题。
-   - 约束：必须缩短成简单的一句话（15字以内）。
-   - 示例：“忘记药品来源”、“不知道药品禁忌”、“减少焦虑”、“痛经缓解”。
-
-4. **应用场景 (Scenario)**：
-   - 仅限从以下三个选项中选择一个：[生活场景, 工作场景, 特殊场景]
-   - 规则：特殊场景权重最低，仅在无法归类为生活或工作时使用。
-
-5. **概述 (Overview)**：
-   - 简要描述视频的主要内容、剧情走向或展现形式。
-   - **严禁**使用“视频通过...”、“该视频展示了...”等引导语。
-   - 直接陈述画面内容或剧情。
-
-6. **深度分析 (Analysis)**：
-   - 结合提供的投放数据（展现、点击、消耗、激活、点击率CTR、转换率CVR）进行综合评判。
-   - **严禁**使用“根据数据分析...”、“从数据来看...”等废话。直接给出结论。
-   - **特别注意**：请显著提升「消耗」数据的分析权重。消耗代表了公司的实际投入和潜在收益规模。
-     - 对于**高消耗**视频：需严格审视其转化率和点击率，分析为何能跑出高消耗（素材哪里吸引人？）以及是否存在“高耗低效”的浪费风险。
-     - 对于**低消耗**视频：分析未能跑量的原因（是封面不吸引人导致点击率低，还是内容平庸）。
-   - 综合判断视频的优劣，并给出优化方向。
-
-**输出格式要求**：
-请直接返回标准的 JSON 格式，不要包含Markdown标记或其他废话：
-{
-    "人群": "年轻女性",
-    "功能": "月暖暖",
-    "痛点": "痛经缓解",
-    "场景": "生活场景",
-    "概述": "年轻女性在办公室捂着肚子，表情痛苦，随后拿出月暖暖产品使用，表情舒缓。",
-    "分析": "点击率较高（X%），封面痛点直击人心。消耗较高但转化一般，建议优化落地页引导。"
-}"""
-
-    def _call_qwen_vl(self, image_path: str, text_content: str, performance_data: Dict) -> Optional[Dict]:
-        """调用 Qwen-VL-Plus API。"""
+    def _call_dashscope(self, system_prompt: str, user_content: List[Dict], model: str = "qwen-vl-plus-2025-08-15") -> Optional[str]:
+        """通用 DashScope API 调用方法。"""
         url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+        if "vl" not in model.lower():
+             # 如果是非视觉模型，使用不同的 URL (虽然 Qwen-VL 也能处理纯文本，但为了扩展性保留此判断)
+             url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
+
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
         
-        perf_str = "\n".join([f"{k}: {v}" for k, v in performance_data.items()])
-        
-        user_content = [
-            {"image": f"data:image/jpeg;base64,{self._encode_image(image_path)}"},
-            {"text": f"【视频文案】：\n{text_content}\n\n【投放数据】：\n{perf_str}\n\n请根据上述素材和数据进行分析。"}
-        ]
-
         payload = {
-            "model": "qwen-vl-plus-2025-08-15",
+            "model": model,
             "input": {
                 "messages": [
-                    {"role": "system", "content": [{"text": self._get_system_prompt()}]},
+                    {"role": "system", "content": [{"text": system_prompt}]},
                     {"role": "user", "content": user_content}
                 ]
             },
@@ -194,8 +145,7 @@ class AdsAnalyzer:
                 
                 if "output" in result and "choices" in result["output"]:
                     content = result["output"]["choices"][0]["message"]["content"][0]["text"]
-                    content = content.replace("```json", "").replace("```", "").strip()
-                    return json.loads(content)
+                    return content
                 else:
                     logger.error(f"意外响应: {result}")
             
@@ -203,7 +153,100 @@ class AdsAnalyzer:
                 logger.error(f"第 {attempt+1}/3 次尝试失败: {e}")
                 if attempt < 2:
                     time.sleep(2)
+        return None
+
+    def _get_visual_description(self, image_path: str, text_content: str) -> Optional[str]:
+        """第一阶段：视觉内容识别（结合画面与文案）。"""
+        system_prompt = prompt_loader.load("video_analyzer/visual_description.md")
+        user_content = [
+            {"image": f"data:image/jpeg;base64,{self._encode_image(image_path)}"},
+            {"text": f"【语音文案】：\n{text_content}\n\n请结合文案，客观描述该视频宫格图呈现的内容。"}
+        ]
+        return self._call_dashscope(system_prompt, user_content)
+
+    def _synthesize_analysis(self, visual_desc: str, text_content: str, row_data: Dict, schema: List[Dict] = None, user_logic: str = "") -> Optional[Dict]:
+        """第二阶段：数据整合分析。根据 Schema 动态生成分析逻辑。"""
+        system_prompt = prompt_loader.load("video_analyzer/data_synthesis.md")
         
+        # 如果提供了 Schema，动态增强提示词
+        schema_instruction = ""
+        if schema:
+            schema_instruction = "\n\n# Output Field Constraints (Strictly follow this Schema)\n"
+            schema_instruction += "你必须严格按照以下字段定义进行分析，不要输出任何不在列表中的字段。\n"
+            for field in schema:
+                name = field["field_name"]
+                f_type = field["type"]
+                # 排除一些系统字段或只读字段
+                if name in ["缩略图", "视频链接", "素材名称"]:
+                    continue
+                
+                desc = f"- **{name}** (类型代码: {f_type})"
+                if "options" in field:
+                    desc += f" | 必须从以下预设选项中选择: {field['options']}"
+                schema_instruction += desc + "\n"
+            
+            schema_instruction += "\n请务必返回一个包含上述字段的 JSON 对象。如果某个字段无法从内容中得出，请保持为空字符串或默认值。"
+
+        # 准备输入数据 (包含所有行数据)
+        # 排除已知的媒体字段，将其他所有字段作为“参考数据”喂给 AI
+        reference_data = {k: v for k, v in row_data.items() if k not in ["素材名称", "视频链接", "缩略图"]}
+        data_str = json.dumps(reference_data, ensure_ascii=False, indent=2)
+        
+        user_input = f"""
+【视觉描述】：
+{visual_desc}
+
+【语音文案】：
+{text_content}
+
+【参考数据（包含原始表格中的所有字段信息）】：
+{data_str}
+
+【用户确认的分析逻辑/指令】：
+{user_logic or "请按默认逻辑进行深度分析。"}
+"""
+        full_system_prompt = system_prompt + schema_instruction
+        user_content = [{"text": user_input}]
+        
+        # 使用视觉模型处理纯文本 (Qwen-VL 也能处理)
+        response_text = self._call_dashscope(full_system_prompt, user_content, model="qwen-vl-plus-2025-08-15")
+        
+        if response_text:
+            try:
+                content = response_text.replace("```json", "").replace("```", "").strip()
+                return json.loads(content)
+            except Exception as e:
+                logger.error(f"解析 JSON 失败: {e}\n原内容: {response_text}")
+        return None
+
+    def analyze_template(self, fields: List[Dict]) -> Optional[List[Dict]]:
+        """解析用户提供的飞书模板意图。生成理解清单。"""
+        system_prompt = prompt_loader.load("interaction/intent_clarification.md")
+        
+        # 简化字段信息传给 AI
+        simplified_fields = []
+        for f in fields:
+            f_info = {
+                "field_name": f.get("field_name"),
+                "field_type": f.get("type"),
+            }
+            if "options" in f:
+                f_info["options"] = f["options"]
+            simplified_fields.append(f_info)
+
+        fields_str = json.dumps(simplified_fields, ensure_ascii=False, indent=2)
+        user_input = f"以下是我的飞书多维表格模板字段列表，请按规范生成理解确认清单：\n{fields_str}"
+        
+        user_content = [{"text": user_input}]
+        # 使用更强的模型来做逻辑分析
+        response_text = self._call_dashscope(system_prompt, user_content, model="qwen-max")
+        
+        if response_text:
+            try:
+                content = response_text.replace("```json", "").replace("```", "").strip()
+                return json.loads(content)
+            except Exception as e:
+                logger.error(f"模板意图解析失败: {e}\n内容: {response_text}")
         return None
 
     def _find_assets(self, material_name: str) -> Tuple[Optional[str], Optional[str]]:
@@ -220,7 +263,7 @@ class AdsAnalyzer:
         return None, None
 
     def _fetch_feishu_data(self, app_token: str = None, table_id: str = None) -> List[Dict]:
-        """获取并标准化飞书数据。"""
+        """获取并标准化飞书数据。动态提取所有可用字段。"""
         target_app_token = app_token
         target_table_id = table_id
 
@@ -233,7 +276,6 @@ class AdsAnalyzer:
             return []
             
         logger.info(f"App Token: {target_app_token}")
-        # 如果未提供 table_id，使用配置或获取第一个表
         if not target_table_id:
              target_table_id = config.SOURCE_TABLE_ID
              
@@ -242,47 +284,38 @@ class AdsAnalyzer:
         normalized_data = []
         for r in records:
             fields = r.get("fields", {})
+            item = {}
             
-            # 标准化链接
-            url_field = fields.get("视频链接")
-            url = ""
-            if isinstance(url_field, str):
-                url = url_field
-            elif isinstance(url_field, list) and len(url_field) > 0:
-                url = url_field[0].get("url", "") or url_field[0].get("link", "")
-            elif isinstance(url_field, dict):
-                url = url_field.get("url", "") or url_field.get("link", "")
-                
-            # 标准化来源
-            source_field = fields.get("来源", "")
-            source = ""
-            if isinstance(source_field, str):
-                source = source_field
-            elif isinstance(source_field, list) and len(source_field) > 0:
-                item_0 = source_field[0]
-                if isinstance(item_0, dict):
-                    source = item_0.get("text", "") or item_0.get("name", "")
+            # 动态处理所有字段
+            for key, val in fields.items():
+                # 处理常见的飞书复杂字段类型
+                if isinstance(val, list) and len(val) > 0:
+                    item_0 = val[0]
+                    if isinstance(item_0, dict):
+                        # 处理链接、文本、人员等
+                        item[key] = item_0.get("url") or item_0.get("link") or item_0.get("text") or item_0.get("name") or str(val)
+                    else:
+                        item[key] = val
+                elif isinstance(val, dict):
+                    item[key] = val.get("url") or val.get("link") or val.get("text") or val.get("name") or str(val)
                 else:
-                    source = str(item_0)
-            elif isinstance(source_field, dict):
-                source = source_field.get("text", "") or source_field.get("name", "")
+                    item[key] = val
+            
+            # 确保关键字段存在（即使为空）
+            if "素材名称" not in item:
+                # 尝试通过别名或搜索含有“视频”或“名称”的字段作为素材名
+                for k in item.keys():
+                    if "名称" in k or "视频" in k or "素材" in k:
+                        item["素材名称"] = item[k]
+                        break
 
-            item = {
-                "素材名称": fields.get("素材名称", ""),
-                "视频链接": url,
-                "展现": fields.get("展现", 0),
-                "点击": fields.get("点击", 0),
-                "消耗": fields.get("消耗", 0),
-                "激活人数": fields.get("激活人数", 0),
-                "来源": source
-            }
             normalized_data.append(item)
             
         return normalized_data
 
-    def process(self, source_app_token: str = None, source_table_id: str = None, progress_callback=None) -> List[Dict]:
+    def process(self, source_app_token: str = None, source_table_id: str = None, progress_callback=None, schema: List[Dict] = None, user_logic: str = "") -> List[Dict]:
         """核心处理逻辑：读取源表，分析视频，返回结果列表。"""
-        # 1. 确定目标表
+        # ... 保持之前的逻辑 ...
         target_app_token = source_app_token
         if not target_app_token:
             logger.info("正在从 Wiki Token 解析 App Token...")
@@ -295,6 +328,7 @@ class AdsAnalyzer:
         logger.info(f"App Token: {target_app_token}")
         target_table_id = source_table_id or config.SOURCE_TABLE_ID
 
+        # 获取数据 (此时已是动态提取)
         data = self._fetch_feishu_data(target_app_token, target_table_id)
         
         results = []
@@ -304,7 +338,6 @@ class AdsAnalyzer:
         success_count = 0
         skip_count = 0
         
-        # 定义进度通知步长 (例如总数的 20%，或者至少每 10 条一次)
         report_step = max(1, total_rows // 5) if total_rows > 10 else 1
 
         for index, row in enumerate(data):
@@ -327,7 +360,6 @@ class AdsAnalyzer:
             if not sheet_path or not text_path:
                 logger.warning(f"{material_name}: 未找到本地素材 (跳过分析)")
                 skip_count += 1
-                # 即使是静默模式，跳过的信息也建议显示，方便排查
                 if progress_callback:
                     progress_callback(f"⚠️ {material_name}: 未找到本地素材 (跳过分析)")
                 continue
@@ -341,34 +373,25 @@ class AdsAnalyzer:
                 skip_count += 1
                 continue
 
-            # 提取投放数据
-            perf_data = {
-                "展现": row.get("展现", 0),
-                "点击": row.get("点击", 0),
-                "消耗": row.get("消耗", 0),
-                "激活人数": row.get("激活人数", 0),
-                "来源": row.get("来源", "")
-            }
+            # 调用 AI (两阶段分析，传入 Schema 和用户确认后的逻辑)
+            visual_desc = self._get_visual_description(sheet_path, text_content)
+            analysis_json = None
+            if visual_desc:
+                analysis_json = self._synthesize_analysis(visual_desc, text_content, row, schema=schema, user_logic=user_logic)
 
-            # 调用 AI
-            analysis_json = self._call_qwen_vl(sheet_path, text_content, perf_data)
             if analysis_json:
-                # 合并结果
+                # 合并结果 (优先使用分析结果覆盖原始数据)
                 res_item = {**row, **analysis_json}
                 
-                # 显式添加缩略图路径，以便 Syncer 可以上传
+                # 显式添加缩略图路径
                 if sheet_path and os.path.exists(sheet_path):
                     res_item["缩略图"] = sheet_path
                 
                 results.append(res_item)
                 success_count += 1
                 
-                # 进度通知逻辑：
-                # 1. 如果数据量小 (<10)，逐条通知
-                # 2. 如果数据量大，按步长通知
                 if progress_callback:
                     if total_rows <= 10:
-                        # 逐条通知不需要显示具体 JSON，只显示成功状态
                         pass 
                     elif (success_count % report_step == 0) or (index + 1 == total_rows):
                         progress_callback(f"📊 AI 分析进度: {index+1}/{total_rows} (已完成 {success_count} 条)")

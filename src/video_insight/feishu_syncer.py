@@ -78,8 +78,8 @@ class FeishuSyncer:
                 .token(token) \
                 .type(type) \
                 .need_notification(True) \
-                .remove_old_owner(False) \
-                .stay_put(True) \
+                .remove_old_owner(True) \
+                .stay_put(False) \
                 .request_body(Owner.builder()
                     .member_type(member_type)
                     .member_id(member_id)
@@ -442,6 +442,31 @@ class FeishuSyncer:
             logger.warning(f"获取字段类型失败: {e}")
             return {}
 
+    def get_table_schema(self, app_token: str, table_id: str) -> List[Dict[str, Any]]:
+        """获取完整的表结构定义，包括单选/多选的选项。"""
+        schema = []
+        try:
+            req = ListAppTableFieldRequest.builder() \
+                .app_token(app_token) \
+                .table_id(table_id) \
+                .build()
+            
+            resp = self.client.bitable.v1.app_table_field.list(req)
+            if resp.success() and resp.data and resp.data.items:
+                for field in resp.data.items:
+                    item = {
+                        "field_name": field.field_name,
+                        "type": field.type,
+                    }
+                    # 如果是单选(3)或多选(4)，获取选项
+                    if field.type in [3, 4] and field.property and field.property.options:
+                        item["options"] = [opt.name for opt in field.property.options]
+                    schema.append(item)
+            return schema
+        except Exception as e:
+            logger.error(f"获取表结构失败: {e}")
+            return []
+
     def _upload_image(self, file_path: str, app_token: str) -> Optional[str]:
         """上传图片到飞书云文档并返回 Token。"""
         path = Path(file_path)
@@ -504,58 +529,60 @@ class FeishuSyncer:
         return None
 
     def _build_fields(self, item: Dict, app_token: str, field_types: Dict[str, int] = None) -> Dict[str, Any]:
-        """将数据项映射到飞书字段。"""
+        """将数据项映射到飞书字段。动态适配表结构。"""
         fields = {}
-        
-        # 1. 文本与选项字段 (直接映射)
-        text_map = [
-            '素材名称', '痛点', '概述', '分析', 
-            '人群', '功能', '场景', '来源'
-        ]
-        for key in text_map:
-            if key in item and item[key] is not None:
-                val = item[key]
+        if not field_types:
+            return fields
+
+        # 遍历 AI 返回的所有字段
+        for key, val in item.items():
+            if val is None:
+                continue
                 
-                # 获取实际字段名
-                actual_key = self._resolve_field_name(key, field_types) if field_types else key
-                if not actual_key:
-                    # 如果找不到对应字段，则跳过
-                    continue
+            # 1. 寻找实际的飞书字段名 (直接匹配或别名匹配)
+            actual_key = self._resolve_field_name(key, field_types)
+            if not actual_key:
+                continue # 找不到对应字段，忽略
+
+            f_type = field_types.get(actual_key)
+
+            # 2. 根据飞书字段类型进行转换
+            # 类型 ID: 1=文本, 2=数字, 3=单选, 4=多选, 15=超链接, 17=附件, 20=多行文本
+            try:
+                if f_type in [1, 20]: # 文本或多行文本
+                    fields[actual_key] = str(val)
                 
-                # 处理多选字段 (Type 4)
-                if field_types and field_types.get(actual_key) == 4:
+                elif f_type == 2: # 数字
+                    num_val = self._safe_number(val)
+                    if num_val is not None:
+                        fields[actual_key] = num_val
+                
+                elif f_type == 3: # 单选
+                    fields[actual_key] = str(val)
+                
+                elif f_type == 4: # 多选
                     if isinstance(val, str):
-                        # 尝试分割逗号（中文或英文）
-                        val = [v.strip() for v in re.split(r'[,，]', val) if v.strip()]
-                    elif not isinstance(val, list):
-                        val = [str(val)]
-                fields[actual_key] = val
-
-        # 2. 数字字段 (安全转换)
-        num_map = ['展现', '点击', '消耗', '激活人数', '点击率', '转换率']
-        for key in num_map:
-            if key in item:
-                val = self._safe_number(item[key])
-                if val is not None:
-                    actual_key = self._resolve_field_name(key, field_types) if field_types else key
-                    if actual_key:
-                        fields[actual_key] = val
-
-        # 3. 超链接字段
-        if '视频链接' in item and item['视频链接']:
-            actual_key = self._resolve_field_name('视频链接', field_types) if field_types else '视频链接'
-            if actual_key:
-                url = str(item['视频链接']).strip()
-                fields[actual_key] = {"text": url, "link": url}
-
-        # 3. 附件字段 (缩略图)
-        thumb_path = item.get('缩略图')
-        if thumb_path and os.path.exists(thumb_path):
-            actual_key = self._resolve_field_name('缩略图', field_types) if field_types else '缩略图'
-            if actual_key:
-                token = self._upload_image(thumb_path, app_token)
-                if token:
-                    fields[actual_key] = [{"file_token": token}]
+                        # 尝试分割逗号
+                        fields[actual_key] = [v.strip() for v in re.split(r'[,，]', val) if v.strip()]
+                    elif isinstance(val, list):
+                        fields[actual_key] = [str(v) for v in val]
+                    else:
+                        fields[actual_key] = [str(val)]
+                
+                elif f_type == 15: # 超链接
+                    url = str(val).strip()
+                    if url.startswith("http"):
+                        fields[actual_key] = {"text": url, "link": url}
+                
+                elif f_type == 17: # 附件
+                    # 如果是本地路径，则上传
+                    if isinstance(val, str) and os.path.exists(val):
+                        token = self._upload_image(val, app_token)
+                        if token:
+                            fields[actual_key] = [{"file_token": token}]
+            
+            except Exception as e:
+                logger.error(f"字段转换失败: {actual_key} ({key}) = {val}, error: {e}")
         
         return fields
 
