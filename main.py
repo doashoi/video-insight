@@ -1,6 +1,14 @@
 import argparse
 import sys
+import logging
 from pathlib import Path
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("CLI")
 
 # 添加项目根目录到 sys.path 以确保导入正常工作
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -33,37 +41,37 @@ def main():
     args = parser.parse_args()
 
     if args.command == "download":
-        print("=== 步骤 1: 下载视频 ===")
+        logger.info("=== 步骤 1: 下载视频 ===")
         run_downloader()
         
     elif args.command == "process":
-        print("=== 步骤 2: 处理视频 ===")
+        logger.info("=== 步骤 2: 处理视频 ===")
         process_video_folder(config.OUTPUT_DIR, config.RESULT_DIR)
         
     elif args.command == "analyze":
-        print("=== 步骤 3: AI 分析 ===")
+        logger.info("=== 步骤 3: AI 分析 ===")
         run_analyzer()
         
     elif args.command == "sync":
-        print("=== 步骤 4: 同步到飞书 ===")
+        logger.info("=== 步骤 4: 同步到飞书 ===")
         run_syncer()
         
     elif args.command == "all":
-        print("=== 开始完整管线 ===")
+        logger.info("=== 开始完整管线 ===")
         
-        print("\n>>> [1/4] 正在下载视频...")
+        logger.info("\n>>> [1/4] 正在下载视频...")
         run_downloader()
         
-        print("\n>>> [2/4] 正在处理视频...")
+        logger.info("\n>>> [2/4] 正在处理视频...")
         process_video_folder(config.OUTPUT_DIR, config.RESULT_DIR)
         
-        print("\n>>> [3/4] AI 分析...")
+        logger.info("\n>>> [3/4] AI 分析...")
         run_analyzer()
         
-        print("\n>>> [4/4] 正在同步到飞书...")
+        logger.info("\n>>> [4/4] 正在同步到飞书...")
         run_syncer()
         
-        print("\n=== 完整管线执行完毕 ===")
+        logger.info("\n=== 完整管线执行完毕 ===")
         
     else:
         parser.print_help()

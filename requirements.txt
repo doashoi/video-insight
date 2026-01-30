@@ -8,5 +8,4 @@ Pillow
 tqdm
 lark-oapi
 opencv-python-headless
-oss2
 pycryptodome

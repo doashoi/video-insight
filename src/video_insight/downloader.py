@@ -1,10 +1,13 @@
 import re
 import requests
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Tuple
 from tqdm import tqdm
 from .config import config
+
+logger = logging.getLogger("Downloader")
 
 class FeishuClient:
     """飞书多维表格 API 客户端，用于下载记录。"""
@@ -32,7 +35,7 @@ class FeishuClient:
         page_token = ""
         has_more = True
         
-        print("🔍 正在从飞书多维表格获取数据...")
+        logger.info("正在从飞书多维表格获取数据...")
         while has_more:
             url = f"{config.FEISHU_DOMAIN}/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
             params = {"page_size": 100, "page_token": page_token}
@@ -47,10 +50,10 @@ class FeishuClient:
                 has_more = data.get("has_more", False)
                 page_token = data.get("page_token", "")
             except Exception as e:
-                print(f"❌ 获取记录失败: {e}")
+                logger.error(f"获取记录失败: {e}")
                 break
         
-        print(f"✅ 成功获取 {len(all_records)} 条记录")
+        logger.info(f"成功获取 {len(all_records)} 条记录")
         return all_records
 
 class VideoDownloader:
@@ -124,12 +127,12 @@ class VideoDownloader:
                 tasks.append((name, url))
 
         if not tasks:
-            print("\n⚠️ 未找到有效的视频链接。")
+            logger.warning("未找到有效的视频链接。")
             if progress_callback:
                 progress_callback("⚠️ 未找到有效的视频链接。")
             return
 
-        print(f"🚀 开始下载 (线程数: {self.max_workers})...")
+        logger.info(f"开始下载 (线程数: {self.max_workers})...")
         if progress_callback:
             progress_callback(f"🚀 任务已开始，正在下载视频，共计 {len(tasks)} 条...")
 
@@ -150,17 +153,15 @@ class VideoDownloader:
                             success_count += 1
                     else:
                         fail_count += 1
-                        tqdm.write(f"❌ 失败: {name} | 原因: {msg}")
+                        logger.error(f"失败: {name} | 原因: {msg}")
                         if progress_callback:
                             progress_callback(f"❌ 下载失败: {name} | 原因: {msg}")
                     pbar.update(1)
 
-        print("\n" + "="*30)
-        print(f"🏁 下载完成!")
-        print(f"✨ 新增: {success_count}")
-        print(f"♻️ 跳过: {skip_count}")
-        print(f"📁 输出目录: {self.output_dir.absolute()}")
-        print("="*30)
+        logger.info("下载完成!")
+        logger.info(f"新增: {success_count}")
+        logger.info(f"跳过: {skip_count}")
+        logger.info(f"输出目录: {self.output_dir.absolute()}")
         
         if progress_callback:
             progress_callback(f"✅ 视频下载完成，成功 {success_count + skip_count} 条 (新增 {success_count}, 跳过 {skip_count})，失败 {fail_count} 条。")
@@ -171,7 +172,7 @@ def run_downloader(source_app_token: str = None, source_table_id: str = None, pr
         table_id = source_table_id or config.SOURCE_TABLE_ID
 
         if not app_token or not table_id:
-            print("[Downloader] 缺少源 App Token 或 Table ID。")
+            logger.error("缺少源 App Token 或 Table ID。")
             if progress_callback:
                 progress_callback("❌ 配置错误: 缺少源 App Token 或 Table ID。")
             return
@@ -184,7 +185,7 @@ def run_downloader(source_app_token: str = None, source_table_id: str = None, pr
         downloader.start(records, progress_callback)
         
     except Exception as e:
-        print(f"💥 严重错误: {e}")
+        logger.error(f"下载器发生严重错误: {e}")
         if progress_callback:
             progress_callback(f"💥 下载器发生严重错误: {e}")
 

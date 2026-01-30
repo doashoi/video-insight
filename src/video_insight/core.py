@@ -192,16 +192,46 @@ def run_pipeline_task(user_id: str, source_url: str, progress_callback=None, tem
             error_msg = getattr(syncer, 'last_error', None) or "复制多维表格失败"
             return False, None, error_msg
         
-        # --- 步骤 3: 初始化权限和字段 ---
+        # --- 步骤 3: 初始化权限和获取 Schema ---
         syncer.add_member_permission(app_token, user_id)
         
         table_id = syncer.get_default_table_id(app_token)
         if not table_id:
             return False, None, "无法获取新表的默认数据表 ID"
             
-        syncer.init_table_fields(app_token, table_id)
+        # 获取目标表的结构定义
+        report_progress("📋 正在获取目标表结构定义...")
+        schema = syncer.get_table_schema(app_token, table_id)
+        if not schema:
+             report_progress("⚠️ 无法获取表结构，将使用默认分析逻辑。")
+        else:
+             report_progress(f"✅ 已成功解析 {len(schema)} 个字段定义。")
+
+        # --- 步骤 4: 意图确认与主动追问 (新增环节) ---
+        report_progress("🤔 正在生成分析意图确认清单...")
+        analyzer = AdsAnalyzer(output_dir=result_dir, assets_dir=result_dir)
+        confirmation_list = analyzer.analyze_template(schema)
         
-        # --- 步骤 4: 告知用户新表链接 ---
+        if confirmation_list:
+            # 这里的逻辑在实际生产中应该：
+            # 1. 发送消息卡片给用户
+            # 2. 等待用户确认或修改指令
+            # 3. 如果用户修改，则更新 user_logic 重新分析或直接应用
+            # 目前作为 MVP 阶段，我们模拟这一过程或将清单记录到日志中
+            report_progress("📝 AI 对当前模板的理解如下：")
+            for item in confirmation_list:
+                status_icon = "✅" if item['status'] == 'resolved' else "❓"
+                report_progress(f"{status_icon} 【{item['field_name']}】: {item['logic_description']}")
+                if item['status'] != 'resolved':
+                    report_progress(f"   👉 追问: {item['clarification_question']}")
+            
+            # TODO: 这里需要一个真正的交互循环
+            # user_logic = wait_for_user_confirmation(confirmation_list)
+            user_logic = "" # 暂时留空，表示使用 AI 默认生成的逻辑
+        else:
+            user_logic = ""
+
+        # 告知用户新表链接
         # 确保域名不包含多余字符
         clean_domain = domain.rstrip("/")
         table_url = f"{clean_domain}/base/{app_token}?table={table_id}"
@@ -216,11 +246,9 @@ def run_pipeline_task(user_id: str, source_url: str, progress_callback=None, tem
         report_progress("🎵 [2/4] 正在进行语音识别 (ASR)...")
         process_video_folder(video_download_dir, result_dir, report_progress)
         
-        # 5.3 AI 分析
+        # 5.3 AI 分析 (传入 user_logic)
         report_progress("🤖 [3/4] 正在使用 AI 分析视频内容...")
-        # 关键修复：AdsAnalyzer 的素材目录应该是 result_dir，因为处理后的拼图和字幕在那里
-        analyzer = AdsAnalyzer(output_dir=result_dir, assets_dir=result_dir)
-        analysis_results = analyzer.process(source_app_token, source_table_id, report_progress) 
+        analysis_results = analyzer.process(source_app_token, source_table_id, report_progress, schema=schema, user_logic=user_logic) 
         
         # 5.4 同步到新表格
         report_progress(f"🔄 [4/4] 正在同步 {len(analysis_results)} 条分析结果到飞书...")
@@ -235,7 +263,7 @@ def run_pipeline_task(user_id: str, source_url: str, progress_callback=None, tem
         
     except Exception as e:
         logger.error(f"Pipeline failed: {e}")
-        traceback.print_exc()
+        logger.error(traceback.format_exc())
         # 出错时也尝试清理
         if cache_root_dir and cache_root_dir.exists():
              shutil.rmtree(cache_root_dir, ignore_errors=True)

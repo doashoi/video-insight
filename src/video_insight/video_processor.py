@@ -289,9 +289,14 @@ class VideoAnalyzer:
         return merged
 
     def analyze_audio(self, video_path: str, output_dir: str) -> Optional[List[Dict]]:
-        """调用阿里云 DashScope ASR 服务进行识别。"""
-        temp_audio_dir = Path(output_dir) / "temp_audio"
-        temp_audio_dir.mkdir(exist_ok=True)
+        """提取音频并进行 ASR 分析。"""
+        # 在 FC 环境下，确保临时目录在 /tmp 下
+        if config.IS_FC:
+            temp_audio_dir = Path("/tmp/video_insight/temp_audio")
+        else:
+            temp_audio_dir = Path(output_dir) / "temp_audio"
+            
+        temp_audio_dir.mkdir(parents=True, exist_ok=True)
         # 使用 .mp3 后缀
         audio_path = temp_audio_dir / "full_audio.mp3"
         
@@ -301,10 +306,10 @@ class VideoAnalyzer:
             except: pass
             return None
 
-        print(f"[Analysis] 正在通过 DashScope 处理音频: {audio_path.name}")
+        logger.info(f"正在通过 DashScope 处理音频: {audio_path.name}")
         
         if not self.api_key:
-            print("[Error] 未配置 DASHSCOPE_API_KEY，无法进行 ASR 识别")
+            logger.error("未配置 DASHSCOPE_API_KEY，无法进行 ASR 识别")
             return None
 
         # 1. 语音识别 (使用 DashScope Base64 同步提交)
@@ -312,27 +317,27 @@ class VideoAnalyzer:
             # 提交 ASR 任务，传入音频路径以便内部处理 Base64 和大小检查
             asr_response = self._submit_asr_task(str(audio_path))
             if not asr_response:
-                print("[Error] ASR 识别流程失败，未能获取有效响应")
+                logger.error("ASR 识别流程失败，未能获取有效响应")
                 return None
             
             # 同步返回，直接获取结果
             result_data = asr_response
-            print(f"[ASR] 成功收到 ASR 同步返回结果")
+            logger.info(f"成功收到 ASR 同步返回结果")
             
             # 2. 解析结果
             results = []
             output = result_data.get("output", {})
             
             # qwen-asr-flash 响应结构解析
-                sentences = output.get("sentences", [])
+            sentences = output.get("sentences", [])
                 
-                if not sentences:
+            if not sentences:
                     # 尝试解析 output.results[0].sentences (部分模型结构)
                     res_list = output.get("results", [])
                     if res_list:
                         sentences = res_list[0].get("sentences", [])
 
-                if not sentences:
+            if not sentences:
                     full_text = (output.get("text") or "").strip()
                     duration_s = self._get_video_duration_s(video_path)
                     segments = self._detect_speech_segments(str(audio_path), duration_s)
@@ -938,7 +943,7 @@ class VideoAnalyzer:
                 if out_path.exists():
                     frame_paths.append((ts, str(out_path)))
             except Exception as e:
-                print(f"[FFmpeg Error] 失败于 {ts}s: {e}")
+                logger.error(f"FFmpeg Error 失败于 {ts}s: {e}")
         return frame_paths
 
     def _get_hashes(self, img: np.ndarray) -> Dict:
@@ -987,14 +992,14 @@ class VideoAnalyzer:
         try:
             return cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)
         except Exception as e:
-            print(f"[Error] 读取图像失败 {path}: {e}")
+            logger.error(f"读取图像失败 {path}: {e}")
             return None
 
     def remove_duplicate_frames(self, frame_info: List[Tuple[float, str]], threshold: int = 5, extra_report_lines: Optional[List[str]] = None) -> List[Tuple[float, str]]:
         """移除重复帧。"""
         if not frame_info: return []
         
-        print(f"[Dedup] 正在去重 {len(frame_info)} 帧 (阈值: {threshold})...")
+        logger.info(f"正在去重 {len(frame_info)} 帧 (阈值: {threshold})...")
         
         frame_hashes = []
         for ts, path in frame_info:
@@ -1002,7 +1007,7 @@ class VideoAnalyzer:
             if img is not None:
                 frame_hashes.append({'ts': ts, 'path': path, 'hashes': self._get_hashes(img)})
             else:
-                print(f"[Warning] 无法读取图像用于去重: {path}")
+                logger.warning(f"无法读取图像用于去重: {path}")
 
         if not frame_hashes: return []
 
@@ -1039,7 +1044,7 @@ class VideoAnalyzer:
         if len(final_list) > 9:
             indices = np.linspace(0, len(final_list) - 1, 9).astype(int)
             final_list = [final_list[idx] for idx in indices]
-            print(f"[Dedup] 帧数过多 ({len(kept)} > 9)，已重采样至 9。")
+            logger.info(f"帧数过多 ({len(kept)} > 9)，已重采样至 9。")
         
         elif len(final_list) < 3 and len(frame_hashes) >= 3:
             existing_paths = {f['path'] for f in final_list}
@@ -1047,9 +1052,9 @@ class VideoAnalyzer:
             while len(final_list) < 3 and candidates:
                 final_list.append(candidates.pop(len(candidates)//2))
             final_list.sort(key=lambda x: x['ts'])
-            print(f"[Dedup] 帧数过少 ({len(kept)} < 3)，已从原始帧补充。")
+            logger.info(f"帧数过少 ({len(kept)} < 3)，已从原始帧补充。")
 
-        print(f"[Dedup] {len(frame_info)} -> {len(final_list)} (过滤了 {filtered_pairs_count})")
+        logger.info(f"{len(frame_info)} -> {len(final_list)} (过滤了 {filtered_pairs_count})")
         
         # 清理删除的文件
         final_paths = {f['path'] for f in final_list}
@@ -1093,9 +1098,26 @@ class VideoAnalyzer:
 
             max_side = 400
             processed_imgs = []
+            # 加载字体
             try:
-                font = ImageFont.truetype("arial.ttf", 22)
-            except:
+                # 尝试加载中文字体，FC 环境通常没有 arial.ttf
+                # 在 Linux 下尝试常见路径
+                font_paths = [
+                    "arial.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+                    "C:\\Windows\\Fonts\\arial.ttf"
+                ]
+                font = None
+                for fp in font_paths:
+                    try:
+                        font = ImageFont.truetype(fp, 22)
+                        break
+                    except Exception:
+                        continue
+                if font is None:
+                    font = ImageFont.load_default()
+            except Exception:
                 font = ImageFont.load_default()
 
             for ts, p in chunk:
@@ -1307,16 +1329,16 @@ def process_video_folder(video_folder: Path, output_root: Path, progress_callbac
                     f.write(f"最终输出: {len(final_frames)}\n")
 
                 analyzer.create_contact_sheet(final_frames, str(sheet_path))
-                print(f"[Done] 完成图像处理: {video_name}")
+                logger.info(f"完成图像处理: {video_name}")
             else:
-                print(f"[Warning] 未提取到有效帧: {video_name}")
+                logger.warning(f"未提取到有效帧: {video_name}")
 
         # --- 自动删除视频以节省空间 ---
         try:
-            print(f"[Cleanup] 正在删除临时视频: {video_name}")
+            logger.info(f"正在删除临时视频: {video_name}")
             video_file.unlink()
         except Exception as e:
-            print(f"[Cleanup Error] 删除失败 {video_name}: {e}")
+            logger.error(f"删除失败 {video_name}: {e}")
 
     analyzer.release_model()
     if progress_callback:
