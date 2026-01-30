@@ -19,6 +19,9 @@ from lark_oapi.api.drive.v1 import (
     TransferOwnerPermissionMemberRequest, Owner
 )
 from lark_oapi.api.im.v1.model import GetMessageResourceRequest
+from lark_oapi.api.docx.v1.model import (
+    Document, CreateDocumentRequest, CreateDocumentRequestBody
+)
 from lark_oapi.api.sheets.v3.model import (
     Spreadsheet, CreateSpreadsheetRequest
 )
@@ -271,24 +274,24 @@ class FeishuSyncer:
                 logger.error("无法获取或创建“自动提取”文件夹")
                 return None
 
-            # 2. 创建飞书表格
+            # 2. 创建飞书文档 (Docx)
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             file_name = f"CID整理表_{timestamp}"
             
-            req = CreateSpreadsheetRequest.builder() \
-                .request_body(Spreadsheet.builder()
+            req = CreateDocumentRequest.builder() \
+                .request_body(CreateDocumentRequestBody.builder()
                     .title(file_name)
                     .folder_token(folder_token)
                     .build()) \
                 .build()
             
-            resp = self.client.sheets.v3.spreadsheet.create(req)
+            resp = self.client.docx.v1.document.create(req)
             if not resp.success():
-                logger.error(f"创建表格失败: {resp.msg}")
+                logger.error(f"创建文档失败: {resp.msg}")
                 return None
             
-            spreadsheet_token = resp.data.spreadsheet.spreadsheet_token
-            spreadsheet_url = resp.data.spreadsheet.url
+            document_id = resp.data.document.document_id
+            document_url = f"https://{config.FEISHU_DOMAIN}/docx/{document_id}"
             
             # 3. 准备数据矩阵
             # 收集所有片段类型
@@ -315,50 +318,86 @@ class FeishuSyncer:
                         row.append(cid_text)
                 value_matrix.append(row)
 
-            # 4. 使用 v2 Values API 写入数据 (兼容性最强)
-            # 获取第一张工作表的 ID (通常是创建后的默认表)
-            # v3 创建的表格默认第一张表 ID 可以在 resp.data.spreadsheet.sheets[0].sheet_id 获取
-            sheet_id = resp.data.spreadsheet.sheets[0].sheet_id
+            # 4. 在文档中插入表格
+            # 飞书文档插入表格需要使用 docx.v1.document_block_children.create
+            # 我们需要构造一个 table 类型的 block
             
-            # 构造范围，例如 "sheet_id!A1:D10"
-            # 注意：v2 API 支持使用 sheet_id
-            range_str = f"{sheet_id}!A1" # 起始位置
+            row_size = len(value_matrix)
+            col_size = len(headers)
             
+            # 构造表格单元格
+            table_cells = []
+            for row_data in value_matrix:
+                for cell_text in row_data:
+                    # 单元格内容也是 block 列表，通常是一个 text block
+                    table_cells.append({
+                        "content": [
+                            {
+                                "block_type": 2, # text block
+                                "text": {
+                                    "elements": [
+                                        {
+                                            "text_run": {
+                                                "content": str(cell_text)
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    })
+
             import json
             from lark_oapi.core.model import RequestOption
             from lark_oapi.core.const import CONTENT_TYPE, APPLICATION_JSON, AUTHORIZATION
-            from lark_oapi.core.token import TokenManager
-
-            write_req = BaseRequest.builder() \
-                .http_method(HttpMethod.PUT) \
-                .uri(f"/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values") \
+            
+            # 使用原生 HTTP 请求插入表格，因为 SDK 构造复杂的嵌套 Block 极其繁琐
+            insert_req = BaseRequest.builder() \
+                .http_method(HttpMethod.POST) \
+                .uri(f"/open-apis/docx/v1/documents/{document_id}/blocks/{document_id}/children") \
                 .token_types({AccessTokenType.TENANT}) \
                 .body({
-                    "valueRange": {
-                        "range": range_str,
-                        "values": value_matrix
-                    }
+                    "children": [
+                        {
+                            "block_type": 31, # table block
+                            "table": {
+                                "cells": table_cells,
+                                "property": {
+                                    "row_size": row_size,
+                                    "column_size": col_size
+                                }
+                            }
+                        }
+                    ],
+                    "index": -1
                 }) \
                 .build()
-            
-            # 获取 Token 并发送请求
-            tm = TokenManager(self.client._config)
+
+            # 获取 Token
+            from lark_oapi.core.token import TokenManager
+            # 尝试不传参数初始化
+            try:
+                tm = TokenManager(self.client._config)
+            except:
+                tm = TokenManager()
+                tm._config = self.client._config
+                
             token = tm.get_tenant_access_token()
             
             option = RequestOption()
             option.headers[CONTENT_TYPE] = f"{APPLICATION_JSON}; charset=utf-8"
             option.headers[AUTHORIZATION] = f"Bearer {token}"
             
-            write_resp = self.client.request(write_req, option)
+            insert_resp = self.client.request(insert_req, option)
             
-            if write_resp.code != 0:
-                logger.error(f"写入表格数据失败: {write_resp.msg} (Code: {write_resp.code})")
+            if insert_resp.code != 0:
+                logger.error(f"在文档中插入表格失败: {insert_resp.msg} (Code: {insert_resp.code})")
             
             # 5. 转移所有权给用户
             if user_id:
-                self.transfer_owner(spreadsheet_token, user_id, "sheet")
+                self.transfer_owner(document_id, user_id, "docx")
             
-            return spreadsheet_url
+            return document_url
         except Exception as e:
             logger.error(f"创建 CID 报表异常: {e}", exc_info=True)
             return None
