@@ -330,7 +330,7 @@ class VideoAnalyzer:
             
             # qwen-asr-flash 响应结构解析
             sentences = output.get("sentences", [])
-                
+            
             if not sentences:
                     # 尝试解析 output.results[0].sentences (部分模型结构)
                     res_list = output.get("results", [])
@@ -1330,6 +1330,15 @@ def process_video_folder(video_folder: Path, output_root: Path, progress_callbac
 
                 analyzer.create_contact_sheet(final_frames, str(sheet_path))
                 logger.info(f"完成图像处理: {video_name}")
+                
+                # 清理截图缓存
+                if os.path.exists(image_out_dir):
+                    import shutil
+                    try:
+                        shutil.rmtree(image_out_dir)
+                        logger.info(f"已清理截图缓存目录: {image_out_dir}")
+                    except Exception as e:
+                        logger.warning(f"清理截图缓存目录失败: {e}")
             else:
                 logger.warning(f"未提取到有效帧: {video_name}")
 

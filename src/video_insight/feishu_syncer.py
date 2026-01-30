@@ -16,7 +16,18 @@ from lark_oapi.core.model import BaseRequest
 from lark_oapi.api.drive.v1 import (
     UploadAllMediaRequest, UploadAllMediaRequestBody, 
     CreatePermissionMemberRequest, BaseMember, ListFileRequest, CreateFolderFileRequest, CreateFolderFileRequestBody, File,
-    TransferOwnerPermissionMemberRequest, Owner
+    TransferOwnerPermissionMemberRequest, Owner, GetFileRequest
+)
+from lark_oapi.api.im.v1.model import GetMessageResourceRequest
+from lark_oapi.api.sheets.v3.model import (
+    Spreadsheet, CreateSpreadsheetRequest,
+    UpdateSpreadsheetPropertiesRequest, SpreadsheetProperties,
+    BatchUpdateSpreadsheetLevelRequest,
+    UpdateSheetRequest, Sheet,
+    BatchUpdateSheetRequest,
+    UpdateSheetPropertiesRequest, SheetProperties,
+    GridData, RowData, CellData, TextRun, CellValue,
+    UpdateGridDataRequest
 )
 from lark_oapi.api.bitable.v1 import (
     CreateAppTableRecordRequest, 
@@ -165,6 +176,183 @@ class FeishuSyncer:
             return None
         except Exception as e:
             logger.error(f"搜索文件夹异常: {e}")
+            return None
+
+    def download_im_file(self, message_id: str, file_key: str, save_path: str) -> bool:
+        """从飞书 IM 下载文件。"""
+        try:
+            req = GetMessageResourceRequest.builder() \
+                .message_id(message_id) \
+                .file_key(file_key) \
+                .type("file") \
+                .build()
+            
+            resp = self.client.im.v1.message_resource.get(req)
+            if not resp.success():
+                logger.error(f"下载文件失败: {resp.msg}")
+                return False
+            
+            # 确保目录存在
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            
+            with open(save_path, "wb") as f:
+                f.write(resp.file.read())
+            return True
+        except Exception as e:
+            logger.error(f"下载文件异常: {e}")
+            return False
+
+    def process_cid_file(self, file_path: str) -> Dict[str, Dict[str, Dict[str, str]]]:
+        """解析 CID 文件并按剧名、片段类型、尺寸聚合。"""
+        try:
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext == ".csv":
+                # 尝试多种编码
+                df = None
+                for enc in ['utf-8', 'gbk', 'utf-8-sig']:
+                    try:
+                        df = pd.read_csv(file_path, encoding=enc)
+                        break
+                    except:
+                        continue
+                if df is None: return {}
+            else:
+                df = pd.read_excel(file_path)
+
+            # 标准化列名
+            df.columns = [str(c).strip().upper() for c in df.columns]
+            
+            # 查找 CID 和 尺寸 列
+            cid_col = None
+            dim_col = None
+            for col in df.columns:
+                if "CID" in col: cid_col = col
+                if "尺寸" in col: dim_col = col
+            
+            if not cid_col or not dim_col:
+                logger.error(f"未找到 CID 或 尺寸 列。现有列: {list(df.columns)}")
+                return {}
+
+            # 数据结构: {剧名: {片段类型: {尺寸: CID}}}
+            data_map = {}
+            
+            for _, row in df.iterrows():
+                cid = str(row[cid_col]).strip()
+                dim_str = str(row[dim_col]).strip()
+                if not cid or not dim_str or cid.lower() == "nan": continue
+                
+                # 解析尺寸字符串: 0126_After My Bestie Slept With My Ex-Husba_高光片段2_竖
+                parts = dim_str.split('_')
+                if len(parts) < 3: continue
+                
+                orientation = parts[-1].strip() # 竖/横/方
+                category = parts[-2].strip()    # 高光片段2/拼接素材1
+                
+                # 剧名提取
+                start_idx = 0
+                if len(parts) >= 4 and re.match(r'^\d{4}$', parts[0]):
+                    start_idx = 1
+                
+                ph_name = '_'.join(parts[start_idx:-2]).strip()
+                
+                if ph_name not in data_map: data_map[ph_name] = {}
+                if category not in data_map[ph_name]: data_map[ph_name][category] = {}
+                
+                # 同一个剧名、片段、尺寸可能有多个 CID，用换行连接
+                existing = data_map[ph_name][category].get(orientation, "")
+                if cid not in existing:
+                    data_map[ph_name][category][orientation] = (existing + "\n" + cid).strip()
+
+            return data_map
+        except Exception as e:
+            logger.error(f"解析 CID 文件异常: {e}")
+            return {}
+
+    def create_cid_report(self, data: Dict[str, Dict[str, Dict[str, str]]], user_id: str) -> Optional[str]:
+        """创建 CID 整理报表并返回链接。"""
+        try:
+            # 1. 获取或创建“自动提取”文件夹
+            folder_name = "自动提取"
+            folder_token = self.get_or_create_folder(folder_name, user_id)
+            if not folder_token:
+                logger.error("无法获取或创建“自动提取”文件夹")
+                return None
+
+            # 2. 创建飞书表格
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            file_name = f"CID整理表_{timestamp}"
+            
+            req = CreateSpreadsheetRequest.builder() \
+                .request_body(Spreadsheet.builder()
+                    .title(file_name)
+                    .folder_token(folder_token)
+                    .build()) \
+                .build()
+            
+            resp = self.client.sheets.v3.spreadsheet.create(req)
+            if not resp.success():
+                logger.error(f"创建表格失败: {resp.msg}")
+                return None
+            
+            spreadsheet_token = resp.data.spreadsheet.spreadsheet_token
+            spreadsheet_url = resp.data.spreadsheet.url
+            
+            # 3. 写入数据
+            # 获取第一张工作表 ID
+            sheet_resp = self.client.sheets.v3.spreadsheet.get(resp.data.spreadsheet.spreadsheet_token)
+            sheet_id = resp.data.spreadsheet.sheets[0].sheet_id
+            
+            # 准备表头和数据
+            # 收集所有片段类型
+            all_categories = set()
+            for ph_name, categories in data.items():
+                all_categories.update(categories.keys())
+            
+            sorted_categories = sorted(list(all_categories))
+            
+            # 表头: PH Name | 片段1 (竖) | 片段1 (横) | 片段1 (方) | 片段2 (竖) ...
+            headers = ["PH Name"]
+            for cat in sorted_categories:
+                headers.extend([f"{cat} (竖)", f"{cat} (横)", f"{cat} (方)"])
+            
+            rows = []
+            # 添加表头行
+            header_row = RowData.builder().values([
+                CellData.builder().user_entered_value(CellValue.builder().string_value(h).build()).build()
+                for h in headers
+            ]).build()
+            rows.append(header_row)
+            
+            # 添加数据行
+            for ph_name, categories in data.items():
+                row_values = [CellData.builder().user_entered_value(CellValue.builder().string_value(ph_name).build()).build()]
+                for cat in sorted_categories:
+                    cat_data = categories.get(cat, {})
+                    for orient in ["竖", "横", "方"]:
+                        cid_text = cat_data.get(orient, "")
+                        row_values.append(CellData.builder().user_entered_value(CellValue.builder().string_value(cid_text).build()).build())
+                rows.append(RowData.builder().values(row_values).build())
+
+            # 更新表格内容
+            update_req = UpdateGridDataRequest.builder() \
+                .spreadsheet_token(spreadsheet_token) \
+                .request_body(GridData.builder()
+                    .sheet_id(sheet_id)
+                    .start_row(0)
+                    .start_column(0)
+                    .rows(rows)
+                    .build()) \
+                .build()
+            
+            self.client.sheets.v3.spreadsheet.update_grid_data(update_req)
+            
+            # 4. 转移所有权给用户
+            if user_id:
+                self.transfer_owner(spreadsheet_token, user_id, "sheet")
+            
+            return spreadsheet_url
+        except Exception as e:
+            logger.error(f"创建 CID 报表异常: {e}")
             return None
 
     def get_or_create_folder(self, folder_name: str, user_id: str = None) -> Optional[str]:

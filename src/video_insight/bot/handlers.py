@@ -10,7 +10,6 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTr
 
 from video_insight.config import config
 from video_insight.core import run_pipeline_task, TASK_LOCK
-from video_insight.cid_processor import CIDProcessor
 
 logger = logging.getLogger("BotHandlers")
 
@@ -39,8 +38,7 @@ _client = lark_oapi.Client.builder() \
     .log_level(lark_oapi.LogLevel.DEBUG) \
     .build()
 
-_cid_processor = CIDProcessor(_client)
-
+# 封装简单的文本回复方法
 def send_message(user_id: str, content: str, msg_type: str = "text"):
     """向用户发送消息。"""
     if msg_type == "text":
@@ -258,8 +256,7 @@ def handle_message(data: P2ImMessageReceiveV1):
             # 检查扩展名
             ext = os.path.splitext(file_name)[1].lower()
             if ext not in [".xlsx", ".xls", ".csv"]:
-                # 如果不是表格文件，可能不是给 CID 功能的，保持沉默或轻微提示
-                logger.info(f"Received non-table file: {file_name}")
+                # 如果不是表格文件，忽略，避免干扰
                 return {}
             
             send_message(user_id, f"📥 收到文件: {file_name}，正在解析中，请稍候...")
@@ -270,24 +267,30 @@ def handle_message(data: P2ImMessageReceiveV1):
             temp_path = os.path.join(temp_dir, f"{msg_id}{ext}")
             
             try:
+                from video_insight.feishu_syncer import FeishuSyncer
+                syncer = FeishuSyncer()
+                
                 # 下载并处理
-                if _cid_processor.download_file(msg_id, file_key, temp_path):
-                    data_map = _cid_processor.process_file(temp_path)
+                if syncer.download_im_file(msg_id, file_key, temp_path):
+                    data_map = syncer.process_cid_file(temp_path)
                     if not data_map:
                         send_message(user_id, "❌ 文件解析失败，请确保文件中包含 'CID' 和 '尺寸' 列。")
                     else:
-                        report_url = _cid_processor.create_report(data_map, user_id)
+                        report_url = syncer.create_cid_report(data_map, user_id)
                         if report_url:
-                            send_message(user_id, f"✅ CID 提取完成！\n请查看整理后的表格：\n{report_url}")
+                            send_message(user_id, f"✅ CID 整理表已生成：\n{report_url}\n\n文件已存入“自动提取”文件夹。")
                         else:
-                            send_message(user_id, "❌ 创建飞书表格失败，请稍后重试。")
+                            send_message(user_id, "❌ 生成飞书文档失败，请稍后重试。")
                 else:
                     send_message(user_id, "❌ 文件下载失败。")
+            except Exception as e:
+                logger.error(f"Error processing CID file: {e}", exc_info=True)
+                send_message(user_id, f"❌ 处理过程中发生错误: {str(e)}")
             finally:
                 # 清理临时文件
                 if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                    logger.info(f"Cleaned up temp file: {temp_path}")
+                    try: os.remove(temp_path)
+                    except: pass
             
             return {}
 
