@@ -125,7 +125,11 @@ class FeishuSyncer:
             
             # 手动获取 Token 并添加到 Header，因为 Client.request 处理 BaseRequest 时可能存在 Bug
             from lark_oapi.core.token import TokenManager
-            tm = TokenManager(self.client._config)
+            try:
+                tm = TokenManager(self.client._config)
+            except:
+                tm = TokenManager()
+                tm._config = self.client._config
             token = tm.get_tenant_access_token()
             
             option = RequestOption()
